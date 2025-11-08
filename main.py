@@ -22,6 +22,10 @@ AGENT_REGISTRY = {
         "module": "agent.base_agent.base_agent_hour",
         "class": "BaseAgent_Hour"
     },
+    "BaseAgent_5Min": {
+        "module": "agent.base_agent_5min.base_agent_5min",
+        "class": "BaseAgent_5Min"
+    },
     "BaseAgentAStock": {
         "module": "agent.base_agent_astock.base_agent_astock",
         "class": "BaseAgentAStock"
@@ -211,7 +215,10 @@ async def main(config_path=None):
             runtime_env_path = _resolve_runtime_env_path()
             if os.path.exists(runtime_env_path):
                 os.remove(runtime_env_path)
-                print(f"🔄 Position file not found, cleared config for fresh start from {INIT_DATE}")
+                if agent_type == "BaseAgent_5Min" and config.get("live_mode", False):
+                    print(f"🔄 Position file not found, cleared config for fresh start (LIVE MODE)")
+                else:
+                    print(f"🔄 Position file not found, cleared config for fresh start from {INIT_DATE}")
         
         # Write config values to shared config file (from .env RUNTIME_ENV_PATH)
         write_config_value("SIGNATURE", signature)
@@ -225,6 +232,10 @@ async def main(config_path=None):
         # BaseAgentAStock has its own default symbols, only set for BaseAgent
         if agent_type == "BaseAgentAStock":
             stock_symbols = None  # Let BaseAgentAStock use its default SSE 50
+        elif agent_type == "BaseAgent_5Min":
+            # For 5-min trading, use symbols from config (user-defined list)
+            stock_symbols = config.get("stock_symbols", ["AAPL", "MSFT", "GOOGL"])
+            print(f"📊 5-Min Trading Stocks: {', '.join(stock_symbols)}")
         elif market == "cn":
             from prompts.agent_prompt import all_sse_50_symbols
 
@@ -233,28 +244,44 @@ async def main(config_path=None):
             stock_symbols = all_nasdaq_100_symbols
 
         try:
+            # Prepare agent initialization parameters
+            agent_init_params = {
+                "signature": signature,
+                "basemodel": basemodel,
+                "stock_symbols": stock_symbols,
+                "log_path": log_path,
+                "max_steps": max_steps,
+                "max_retries": max_retries,
+                "base_delay": base_delay,
+                "initial_cash": initial_cash,
+                "init_date": INIT_DATE,
+                "openai_base_url": openai_base_url,
+                "openai_api_key": openai_api_key
+            }
+            
+            # For BaseAgent_5Min, add live_mode parameter
+            if agent_type == "BaseAgent_5Min":
+                live_mode = config.get("live_mode", False)
+                agent_init_params["live_mode"] = live_mode
+                if live_mode:
+                    print(f"🔴 LIVE MODE: Trading will start NOW and continue every 5 minutes")
+            
             # Dynamically create Agent instance
-            agent = AgentClass(
-                signature=signature,
-                basemodel=basemodel,
-                stock_symbols=stock_symbols,
-                log_path=log_path,
-                max_steps=max_steps,
-                max_retries=max_retries,
-                base_delay=base_delay,
-                initial_cash=initial_cash,
-                init_date=INIT_DATE,
-                openai_base_url=openai_base_url,
-                openai_api_key=openai_api_key
-            )
+            agent = AgentClass(**agent_init_params)
 
             print(f"✅ {agent_type} instance created successfully: {agent}")
 
             # Initialize MCP connection and AI model
             await agent.initialize()
             print("✅ Initialization successful")
-            # Run all trading days in date range
-            await agent.run_date_range(INIT_DATE, END_DATE)
+            
+            # Run based on agent mode
+            if agent_type == "BaseAgent_5Min" and config.get("live_mode", False):
+                # Live mode: run continuously from now
+                await agent.run_live()
+            else:
+                # Historical mode: run date range
+                await agent.run_date_range(INIT_DATE, END_DATE)
 
             # Display final position summary
             summary = agent.get_position_summary()

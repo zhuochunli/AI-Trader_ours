@@ -5,9 +5,30 @@ class DataLoader {
     constructor() {
         this.agentData = {};
         this.priceCache = {};
+        this.intradayPriceCache = {};
         this.config = null;
         this.baseDataPath = './data';
-        this.currentMarket = 'us'; // 'us' or 'cn'
+        // Load market from localStorage or default to 'us_5min'
+        this.currentMarket = this.loadMarketFromStorage() || 'us_5min';
+    }
+
+    // Save market selection to localStorage
+    saveMarketToStorage(market) {
+        try {
+            localStorage.setItem('ai-trader-market', market);
+        } catch (e) {
+            console.warn('Failed to save market to localStorage:', e);
+        }
+    }
+
+    // Load market selection from localStorage
+    loadMarketFromStorage() {
+        try {
+            return localStorage.getItem('ai-trader-market');
+        } catch (e) {
+            console.warn('Failed to load market from localStorage:', e);
+            return null;
+        }
     }
 
     // Switch market between US stocks and A-shares
@@ -15,6 +36,8 @@ class DataLoader {
         this.currentMarket = market;
         this.agentData = {};
         this.priceCache = {};
+        this.intradayPriceCache = {};
+        this.saveMarketToStorage(market);
     }
 
     // Get current market
@@ -33,6 +56,12 @@ class DataLoader {
             this.config = await window.configLoader.loadConfig();
             this.baseDataPath = window.configLoader.getDataPath();
         }
+
+        // Always clear caches for intraday trading to ensure fresh prices
+        if (this.currentMarket === 'us_5min') {
+            this.priceCache = {};
+            this.intradayPriceCache = {};
+        }
     }
 
     // Load all agent names from configuration
@@ -44,6 +73,30 @@ class DataLoader {
             const marketConfig = this.getMarketConfig();
             const agentDataDir = marketConfig ? marketConfig.data_dir : 'agent_data';
             const agents = [];
+            
+            // For live 5-min trading, auto-detect agents
+            if (this.currentMarket === 'us_5min' && marketConfig.auto_detect_agents && window.LiveLoader) {
+                console.log('🔴 Auto-detecting live 5-min agents...');
+                const liveAgents = await window.LiveLoader.autoDetectLiveAgents(marketConfig);
+                for (const agentConfig of liveAgents) {
+                    agents.push(agentConfig.folder);
+                    console.log(`✅ Found live agent: ${agentConfig.folder}`);
+                }
+                
+                // Enable auto-refresh for live data
+                if (agents.length > 0 && window.LiveLoader) {
+                    window.LiveLoader.startLiveRefresh(() => {
+                        // Reload the current page data
+                        if (typeof window.loadAllData === 'function') {
+                            window.loadAllData();
+                        }
+                    });
+                }
+                
+                return agents;
+            }
+            
+            // For regular markets, use configured agents
             const enabledAgents = window.configLoader.getEnabledAgents(this.currentMarket);
 
             for (const agentConfig of enabledAgents) {
@@ -59,6 +112,15 @@ class DataLoader {
                 } catch (e) {
                     console.log(`Agent ${agentConfig.folder} error:`, e.message);
                 }
+            }
+
+            // For live 5-min trading with manually configured agents, still enable auto-refresh
+            if (this.currentMarket === 'us_5min' && agents.length > 0 && window.LiveLoader) {
+                window.LiveLoader.startLiveRefresh(() => {
+                    if (typeof window.loadAllData === 'function') {
+                        window.loadAllData();
+                    }
+                });
             }
 
             return agents;
@@ -78,16 +140,27 @@ class DataLoader {
 
             const text = await response.text();
             const lines = text.trim().split('\n').filter(line => line.trim() !== '');
-            const positions = lines.map(line => {
+            const parsedPositions = lines.map(line => {
                 try {
                     return JSON.parse(line);
                 } catch (parseError) {
                     console.error(`Error parsing line for ${agentName}:`, line, parseError);
                     return null;
                 }
-            }).filter(pos => pos !== null);
+            }).filter(pos => pos !== null)
+              ;
 
-            console.log(`Loaded ${positions.length} positions for ${agentName}`);
+            let tradingPositions = parsedPositions.filter(pos => {
+                if (!pos) return false;
+                if (pos.action_type === 'INIT' || (pos.action_id !== undefined && pos.id === undefined)) {
+                    return false;
+                }
+                return true;
+            });
+
+            const positions = tradingPositions.length > 0 ? tradingPositions : parsedPositions;
+
+            console.log(`Loaded ${positions.length} positions for ${agentName} (${tradingPositions.length} trade records, ${positions.length - tradingPositions.length} init entries)`);
             return positions;
         } catch (error) {
             console.error(`Error loading positions for ${agentName}:`, error);
@@ -125,6 +198,10 @@ class DataLoader {
 
     // Load price data for a specific stock symbol
     async loadStockPrice(symbol) {
+        if (this.currentMarket === 'us_5min') {
+            return await this.loadIntradayPriceBars(symbol);
+        }
+
         if (this.priceCache[symbol]) {
             return this.priceCache[symbol];
         }
@@ -165,8 +242,155 @@ class DataLoader {
         }
     }
 
+    // Load intraday 5-minute bars for a symbol
+    async loadIntradayPriceBars(symbol, targetDate) {
+        const cacheKey = targetDate ? `${symbol}:${targetDate}` : `${symbol}:latest`;
+        if (this.currentMarket !== 'us_5min' && this.intradayPriceCache[cacheKey]) {
+            return this.intradayPriceCache[cacheKey];
+        }
+
+        const datesToTry = [];
+        if (targetDate) {
+            datesToTry.push(targetDate);
+        }
+
+        const now = new Date();
+        const todayStr = now.toISOString().slice(0, 10);
+        if (!datesToTry.includes(todayStr)) {
+            datesToTry.push(todayStr);
+        }
+
+        const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        const yesterdayStr = yesterday.toISOString().slice(0, 10);
+        if (!datesToTry.includes(yesterdayStr)) {
+            datesToTry.push(yesterdayStr);
+        }
+
+        let bars = [];
+        for (const dateStr of datesToTry) {
+            try {
+                const url = `${this.baseDataPath}/price_cache_5min/${symbol}/${dateStr}.json?v=${Date.now()}`;
+                const response = await fetch(url);
+                if (!response.ok) {
+                    continue;
+                }
+
+                const data = await response.json();
+                if (data && Array.isArray(data.bars)) {
+                    bars = data.bars
+                        .map(bar => ({
+                            timestamp: bar.timestamp,
+                            close: parseFloat(bar.close),
+                            raw: bar
+                        }))
+                        .filter(bar => !isNaN(bar.close))
+                        .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+                    break;
+                }
+            } catch (error) {
+                console.error(`[loadIntradayPriceBars] ❌ ${symbol} (${dateStr}):`, error.message);
+            }
+        }
+
+        bars = bars || [];
+
+        // Attempt to append live latest bar if available
+        if (this.currentMarket === 'us_5min') {
+            try {
+                const latest = await this.loadLatestBar(symbol);
+                if (latest && latest.bar && latest.bar.t) {
+                    const latestTimestamp = new Date(latest.bar.t).getTime();
+                    const lastTimestamp = bars.length > 0 ? new Date(bars[bars.length - 1].timestamp).getTime() : null;
+                    if (!lastTimestamp || latestTimestamp > lastTimestamp) {
+                        bars.push({
+                            timestamp: latest.bar.t,
+                            close: parseFloat(latest.bar.c),
+                            raw: latest.bar,
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error(`[loadIntradayPriceBars] ❌ latest bar ${symbol}:`, error.message);
+            }
+        }
+
+        this.intradayPriceCache[cacheKey] = bars;
+        return bars;
+    }
+
+    async loadLatestBar(symbol) {
+        try {
+            const url = `${this.baseDataPath}/price_cache_5min/latest/${symbol}.json?v=${Date.now()}`;
+            const response = await fetch(url);
+            if (!response.ok) {
+                return null;
+            }
+            const data = await response.json();
+            return data;
+        } catch (error) {
+            console.error(`[loadLatestBar] ❌ ${symbol}:`, error.message);
+            return null;
+        }
+    }
+
+    // Parse datetime helper
+    parseDateTime(input) {
+        if (!input) return null;
+        if (input instanceof Date) {
+            return input;
+        }
+
+        let normalized = input;
+        if (typeof input === 'string' && input.includes(' ') && !input.includes('T')) {
+            normalized = input.replace(' ', 'T');
+        }
+
+        let parsed = new Date(normalized);
+        if (!isNaN(parsed.getTime())) {
+            return parsed;
+        }
+
+        if (typeof input === 'string') {
+            const trimmed = input.split('.')[0];
+            parsed = new Date(trimmed);
+            if (!isNaN(parsed.getTime())) {
+                return parsed;
+            }
+        }
+
+        return null;
+    }
+
     // Get closing price for a symbol on a specific date/time
     async getClosingPrice(symbol, dateOrTimestamp) {
+        if (this.currentMarket === 'us_5min') {
+            const targetDate = this.parseDateTime(dateOrTimestamp);
+            const targetTimestamp = targetDate ? targetDate.getTime() : Date.now();
+            const targetDateStr = targetDate ? targetDate.toISOString().slice(0, 10) : undefined;
+
+            const bars = await this.loadIntradayPriceBars(symbol, targetDateStr);
+            if (!bars || bars.length === 0) {
+                return null;
+            }
+
+            let chosenBar = null;
+            for (const bar of bars) {
+                const barTimestamp = new Date(bar.timestamp).getTime();
+                if (barTimestamp <= targetTimestamp) {
+                    if (!chosenBar || barTimestamp > new Date(chosenBar.timestamp).getTime()) {
+                        chosenBar = bar;
+                    }
+                }
+            }
+
+            if (!chosenBar) {
+                chosenBar = bars[bars.length - 1];
+            }
+
+            return chosenBar ? chosenBar.close : null;
+        }
+
         const prices = await this.loadStockPrice(symbol);
         if (!prices) {
             return null;
@@ -176,6 +400,29 @@ class DataLoader {
         if (prices[dateOrTimestamp]) {
             const closePrice = prices[dateOrTimestamp]['4. close'] || prices[dateOrTimestamp]['4. sell price'];
             return closePrice ? parseFloat(closePrice) : null;
+        }
+
+        // For intraday (us_5min): Find the most recent price available
+        if (this.currentMarket === 'us_5min') {
+            const allTimestamps = Object.keys(prices).sort();
+            // Find the latest timestamp that is <= the requested timestamp
+            let latestTimestamp = null;
+            for (let i = allTimestamps.length - 1; i >= 0; i--) {
+                if (allTimestamps[i] <= dateOrTimestamp) {
+                    latestTimestamp = allTimestamps[i];
+                    break;
+                }
+            }
+            
+            // If no earlier timestamp found, use the latest available
+            if (!latestTimestamp && allTimestamps.length > 0) {
+                latestTimestamp = allTimestamps[allTimestamps.length - 1];
+            }
+            
+            if (latestTimestamp) {
+                const closePrice = prices[latestTimestamp]['4. close'] || prices[latestTimestamp]['4. sell price'];
+                return closePrice ? parseFloat(closePrice) : null;
+            }
         }
 
         // For A-shares: Extract date only for daily data matching
@@ -236,12 +483,36 @@ class DataLoader {
         const positions = await this.loadAgentPositions(agentName);
         if (positions.length === 0) {
             console.log(`No positions found for ${agentName}`);
-            return null;
+            // Continue so we can still show metadata (e.g., start time) even without trades yet
         }
 
         console.log(`Processing ${positions.length} positions for ${agentName}...`);
 
         let assetHistory = [];
+        let serviceStartTime = null;
+        let initialCash = null;
+
+        // Load agent metadata if available (contains start_time, initial_cash, etc.)
+        try {
+            const marketConfig = this.getMarketConfig();
+            const agentDataDir = marketConfig ? marketConfig.data_dir : 'agent_data';
+            const metadataPath = `${this.baseDataPath}/${agentDataDir}/${agentName}/agent_config.json`;
+            const metadataResponse = await fetch(metadataPath);
+            if (metadataResponse.ok) {
+                const metadata = await metadataResponse.json();
+                serviceStartTime = metadata.start_time || null;
+                initialCash = metadata.initial_cash ?? null;
+            }
+        } catch (error) {
+            console.warn(`[loadAgentData] Unable to load metadata for ${agentName}:`, error.message);
+        }
+
+        if (initialCash === null) {
+            const uiConfig = window.configLoader.getUIConfig();
+            if (uiConfig && typeof uiConfig.initial_value === 'number') {
+                initialCash = uiConfig.initial_value;
+            }
+        }
 
         if (this.currentMarket === 'cn') {
             // A-SHARES LOGIC: Handle multiple transactions per day AND fill date gaps
@@ -385,8 +656,17 @@ class DataLoader {
 
         // Check if we have enough valid data
         if (assetHistory.length === 0) {
-            console.error(`❌ ${agentName}: NO VALID ASSET HISTORY`);
-            return null;
+            if (serviceStartTime && initialCash !== null) {
+                assetHistory.push({
+                    date: serviceStartTime,
+                    value: initialCash,
+                    id: `${agentName}-init`,
+                    action: null,
+                });
+            } else {
+                console.error(`❌ ${agentName}: NO VALID ASSET HISTORY`);
+                return null;
+            }
         }
 
         const result = {
@@ -396,7 +676,9 @@ class DataLoader {
             initialValue: assetHistory[0]?.value || 10000,
             currentValue: assetHistory[assetHistory.length - 1]?.value || 0,
             return: assetHistory.length > 0 ?
-                ((assetHistory[assetHistory.length - 1].value - assetHistory[0].value) / assetHistory[0].value * 100) : 0
+                ((assetHistory[assetHistory.length - 1].value - assetHistory[0].value) / assetHistory[0].value * 100) : 0,
+            startTime: serviceStartTime,
+            initialCash: initialCash,
         };
 
         console.log(`Successfully loaded data for ${agentName}:`, {

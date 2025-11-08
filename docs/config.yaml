@@ -4,8 +4,8 @@
 # Market configurations - Easy to extend for new markets (e.g., crypto)
 markets:
   us:
-    name: "US Market (Nasdaq-100)"
-    subtitle: "Track how different AI models perform in Nasdaq-100 stock trading"
+    name: "Daily Trade"
+    subtitle: "Daily trading strategies - Track AI models in Nasdaq-100 stock trading"
     data_dir: "agent_data"
     benchmark_file: "Adaily_prices_QQQ.json"
     benchmark_name: "QQQ"
@@ -41,6 +41,24 @@ markets:
         icon: "./figs/minimax.svg"
         color: "#3a86ff"
 
+  us_5min:
+    name: "Intraday Trade"
+    subtitle: "Intraday Trading - Real-time 5-minute interval performance"
+    data_dir: "agent_data_5min"
+    benchmark_file: "Adaily_prices_QQQ.json"
+    benchmark_name: "QQQ"
+    benchmark_display_name: "QQQ Invesco"
+    currency: "USD"
+    icon: "🇺🇸"
+    price_data_type: "individual"
+    time_granularity: "5min"  # 5-minute intervals
+    enabled: true
+    agents:  # Intraday 5-min agents
+      - folder: "gpt-4o-mini"
+        display_name: "GPT-4o Mini"
+        icon: "./figs/openai.svg"
+        color: "#ffbe0b"
+
   cn:
     name: "A-Shares (SSE 50)"
     subtitle: "Track how different AI models perform in SSE 50 A-share stock trading"
@@ -53,7 +71,7 @@ markets:
     price_data_type: "merged"  # merged.jsonl file
     price_data_file: "A_stock/merged.jsonl"
     time_granularity: "daily"  # daily dates without hour component
-    enabled: true
+    enabled: false
     agents:  # CN market specific agents
       - folder: "gemini-2.5-flash"
         display_name: "Gemini 2.5 Flash"

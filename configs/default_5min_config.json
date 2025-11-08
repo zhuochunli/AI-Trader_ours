@@ -1,0 +1,94 @@
+{
+  "agent_type": "BaseAgent_5Min",
+  "market": "us",
+  "live_mode": true,
+  "date_range": {
+    "init_date": "2025-01-02 09:30:00",
+    "end_date": "2025-01-02 16:00:00",
+    "comment": "⚠️ IGNORED in live_mode - trading starts NOW when you run the service"
+  },
+  "agent_config": {
+    "max_steps": 50,
+    "max_retries": 3,
+    "base_delay": 0.5,
+    "initial_cash": 10000.0
+  },
+  "log_config": {
+    "log_path": "./data/agent_data_5min"
+  },
+  "models": [
+    {
+      "name": "gpt-4o-mini",
+      "basemodel": "gpt-4o-mini",
+      "signature": "gpt-4o-mini",
+      "enabled": true
+    },
+    {
+      "name": "claude-3.7-sonnet",
+      "basemodel": "claude-3-5-sonnet-20241022",
+      "signature": "claude-3.7-sonnet-5min",
+      "enabled": false
+    },
+    {
+      "name": "gemini-2.5-flash",
+      "basemodel": "gemini-2.0-flash-exp",
+      "signature": "gemini-2.5-flash-5min",
+      "enabled": false
+    }
+  ],
+  "mcp_servers": [
+    {
+      "name": "LocalPrices",
+      "command": "python",
+      "args": ["agent_tools/tool_get_price_local.py"],
+      "env": {
+        "GETPRICE_HTTP_PORT": "8003"
+      }
+    },
+    {
+      "name": "AlpacaBars",
+      "command": "python",
+      "args": ["agent_tools/tool_alpaca_bars.py"],
+      "env": {
+        "ALPACA_BARS_HTTP_PORT": "8010"
+      }
+    },
+    {
+      "name": "Trade",
+      "command": "python",
+      "args": ["agent_tools/tool_trade.py"],
+      "env": {
+        "TRADE_HTTP_PORT": "8002"
+      }
+    },
+    {
+      "name": "Math",
+      "command": "python",
+      "args": ["agent_tools/tool_math.py"],
+      "env": {
+        "MATH_HTTP_PORT": "8004"
+      }
+    },
+    {
+      "name": "Search",
+      "command": "python",
+      "args": ["agent_tools/tool_jina_search.py"],
+      "env": {
+        "SEARCH_HTTP_PORT": "8001"
+      }
+    },
+    {
+      "name": "News",
+      "command": "python",
+      "args": ["agent_tools/tool_alphavantage_news.py"],
+      "env": {
+        "NEWS_HTTP_PORT": "8005"
+      }
+    }
+  ],
+  "stock_symbols": [
+    "AAPL"
+  ],
+  "description": "5-minute intraday trading configuration. Runs trading decisions every 5 minutes during market hours. Uses Alpaca API for real-time bar data."
+}
+

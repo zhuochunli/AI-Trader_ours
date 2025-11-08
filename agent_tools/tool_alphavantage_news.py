@@ -312,7 +312,7 @@ Summary: {summary[:1000]}
 if __name__ == "__main__":
     # Run with streamable-http, support configuring host and port through environment variables to avoid conflicts
     print("Running Alpha Vantage News Tool as search tool")
-    port = int(os.getenv("SEARCH_HTTP_PORT", "8001"))
+    port = int(os.getenv("NEWS_HTTP_PORT", "8005"))
     mcp.run(transport="streamable-http", port=port)
 
     # results = get_market_news(query="AAPL", tickers="AAPL", topics="technology")

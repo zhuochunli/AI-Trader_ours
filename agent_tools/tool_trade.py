@@ -106,10 +106,35 @@ def buy(symbol: str, amount: int) -> Dict[str, Any]:
             print(today_date, signature)
             return {"error": f"Failed to load latest position: {e}", "symbol": symbol, "date": today_date}
     # Step 3: Get stock opening price for the day
-    # Use get_open_prices function to get the opening price of specified stock for the day
-    # If stock symbol does not exist or price data is missing, KeyError exception will be raised
+    # For 5-minute intraday trading (has time component), use Alpaca API for latest price
+    # For daily trading, use get_open_prices from local files
     try:
-        this_symbol_price = get_open_prices(today_date, [symbol], market=market)[f"{symbol}_price"]
+        if 'T' in today_date or (' ' in today_date and len(today_date) > 10):
+            # Intraday 5-minute trading - use Alpaca API to get latest price
+            import requests
+            alpaca_api_key = os.getenv("ALPACA_API_KEY")
+            alpaca_api_secret = os.getenv("ALPACA_API_SECRET")
+            
+            url = f"https://data.alpaca.markets/v2/stocks/{symbol}/bars/latest"
+            headers = {
+                "APCA-API-KEY-ID": alpaca_api_key,
+                "APCA-API-SECRET-KEY": alpaca_api_secret,
+            }
+            params = {"feed": "iex"}
+            
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code == 200:
+                data = response.json()
+                bar = data.get("bar", {})
+                this_symbol_price = bar.get("c")  # Close price of latest bar
+                if not this_symbol_price:
+                    raise KeyError(f"No price data for {symbol}")
+                print(f"💰 Fetched latest price for {symbol}: ${this_symbol_price}")
+            else:
+                raise KeyError(f"Failed to fetch price for {symbol}: {response.status_code}")
+        else:
+            # Daily trading - use local price files
+            this_symbol_price = get_open_prices(today_date, [symbol], market=market)[f"{symbol}_price"]
     except KeyError:
         # Stock symbol does not exist or price data is missing, return error message
         return {
@@ -143,8 +168,8 @@ def buy(symbol: str, amount: int) -> Dict[str, Any]:
         # Decrease cash balance
         new_position["CASH"] = cash_left
 
-        # Increase stock position quantity
-        new_position[symbol] += amount
+        # Increase stock position quantity (initialize to 0 if symbol doesn't exist yet)
+        new_position[symbol] = new_position.get(symbol, 0) + amount
 
         # Step 6: Record transaction to position.jsonl file
         # Build file path: {project_root}/data/{log_path}/{signature}/position/position.jsonl
@@ -273,10 +298,35 @@ def sell(symbol: str, amount: int) -> Dict[str, Any]:
     current_position, current_action_id = get_latest_position(today_date, signature)
 
     # Step 3: Get stock opening price for the day
-    # Use get_open_prices function to get the opening price of specified stock for the day
-    # If stock symbol does not exist or price data is missing, KeyError exception will be raised
+    # For 5-minute intraday trading (has time component), use Alpaca API for latest price
+    # For daily trading, use get_open_prices from local files
     try:
-        this_symbol_price = get_open_prices(today_date, [symbol], market=market)[f"{symbol}_price"]
+        if 'T' in today_date or (' ' in today_date and len(today_date) > 10):
+            # Intraday 5-minute trading - use Alpaca API to get latest price
+            import requests
+            alpaca_api_key = os.getenv("ALPACA_API_KEY")
+            alpaca_api_secret = os.getenv("ALPACA_API_SECRET")
+            
+            url = f"https://data.alpaca.markets/v2/stocks/{symbol}/bars/latest"
+            headers = {
+                "APCA-API-KEY-ID": alpaca_api_key,
+                "APCA-API-SECRET-KEY": alpaca_api_secret,
+            }
+            params = {"feed": "iex"}
+            
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code == 200:
+                data = response.json()
+                bar = data.get("bar", {})
+                this_symbol_price = bar.get("c")  # Close price of latest bar
+                if not this_symbol_price:
+                    raise KeyError(f"No price data for {symbol}")
+                print(f"💰 Fetched latest price for {symbol}: ${this_symbol_price}")
+            else:
+                raise KeyError(f"Failed to fetch price for {symbol}: {response.status_code}")
+        else:
+            # Daily trading - use local price files
+            this_symbol_price = get_open_prices(today_date, [symbol], market=market)[f"{symbol}_price"]
     except KeyError:
         # Stock symbol does not exist or price data is missing, return error message
         return {

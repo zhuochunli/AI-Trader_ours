@@ -6,6 +6,7 @@ window.dataLoader = dataLoader; // Export to global for transaction-loader
 let chartInstance = null;
 let allAgentsData = {};
 let isLogScale = false;
+let isLoading = false; // Flag to prevent multiple simultaneous loads
 
 // Color palette for different agents
 const agentColors = [
@@ -65,7 +66,15 @@ function updateMarketSubtitle() {
 
 // Load data and refresh UI
 async function loadDataAndRefresh() {
+    // Prevent multiple simultaneous loads
+    if (isLoading) {
+        console.log('Already loading, skipping...');
+        return;
+    }
+    
+    isLoading = true;
     showLoading();
+    disableMarketButtons();
 
     try {
         // Ensure config is loaded first
@@ -112,16 +121,43 @@ async function loadDataAndRefresh() {
 
     } catch (error) {
         console.error('Error loading data:', error);
-        alert('Failed to load trading data. Please check console for details.');
+        
+        // Show error message in the UI instead of alert
+        const statsGrid = document.querySelector('.stats-grid');
+        if (statsGrid && Object.keys(allAgentsData || {}).length === 0) {
+            const errorMsg = document.createElement('div');
+            errorMsg.style.cssText = 'grid-column: 1 / -1; padding: 20px; background: #fff3cd; border-radius: 8px; color: #856404; text-align: center;';
+            errorMsg.innerHTML = `
+                <strong>ℹ️ No agents found</strong><br>
+                ${dataLoader.getMarket() === 'us_5min' ? 
+                    'Make sure your 5-minute trading agent is running. It may take a few moments for data to appear.' :
+                    'No trading data available for this market. Please check your configuration.'
+                }
+            `;
+            statsGrid.insertBefore(errorMsg, statsGrid.firstChild);
+            
+            // Auto-remove message after 5 seconds
+            setTimeout(() => errorMsg.remove(), 5000);
+        }
     } finally {
         hideLoading();
+        enableMarketButtons();
+        isLoading = false;
     }
 }
+
+// Expose loadAllData for live refresh
+window.loadAllData = async function() {
+    await loadDataAndRefresh();
+};
 
 // Initialize the page
 async function init() {
     // Set up event listeners first
     setupEventListeners();
+    
+    // Set initial button state to match current market
+    updateActiveButton(dataLoader.getMarket());
 
     // Load initial data
     await loadDataAndRefresh();
@@ -133,19 +169,44 @@ function updateStats() {
     const agentCount = agentNames.length;
 
     // Calculate date range
+    // For live trading: From = earliest data point, To = current time (now)
+    // For historical trading: From = earliest, To = latest data point
     let minDate = null;
     let maxDate = null;
 
     agentNames.forEach(name => {
         const history = allAgentsData[name].assetHistory;
-        if (history.length > 0) {
-            const firstDate = history[0].date;
-            const lastDate = history[history.length - 1].date;
+        history.forEach(entry => {
+            const entryDate = entry.date;
+            if (!minDate || entryDate < minDate) minDate = entryDate;
+            if (!maxDate || entryDate > maxDate) maxDate = entryDate;
+        });
 
-            if (!minDate || firstDate < minDate) minDate = firstDate;
-            if (!maxDate || lastDate > maxDate) maxDate = lastDate;
+        const serviceStart = allAgentsData[name].startTime;
+        if (serviceStart) {
+            if (!minDate || serviceStart < minDate) {
+                minDate = serviceStart;
+            }
         }
     });
+
+    // For intraday trading, use current time as the end time
+    const market = dataLoader.getMarket();
+    if (market === 'us_5min') {
+        // Use current LOCAL time for live intraday trading
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        const nowStr = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        maxDate = nowStr;
+        console.log('🕐 Using current local time as end:', nowStr);
+    }
+
+    console.log('📅 Trading period:', minDate, 'to', maxDate);
 
     // Find best performer
     let bestAgent = null;
@@ -162,20 +223,52 @@ function updateStats() {
     // Update DOM
     document.getElementById('agent-count').textContent = agentCount;
 
-    // Format date range - uniform format for both markets
-    const formatDateRange = (dateStr) => {
+    // Format date/time for display
+    const formatDateTime = (dateStr, label) => {
         if (!dateStr) return 'N/A';
-        // Parse date string (handles both "2025-10-01" and "2025-10-01 10:00:00" formats)
         const date = new Date(dateStr);
-        return date.toLocaleString('en-US', {
+        const market = dataLoader.getMarket();
+        
+        // For intraday trading, include time
+        if (market === 'us_5min') {
+            const timeStr = date.toLocaleString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: true
+            });
+            const dateStrFormatted = date.toLocaleString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric'
+            });
+            return `${label}: ${dateStrFormatted} ${timeStr}`;
+        }
+        
+        // For daily trading, just show date
+        const dateStrFormatted = date.toLocaleString('en-US', {
             month: 'short',
             day: 'numeric',
             year: 'numeric'
         });
+        return `${label}: ${dateStrFormatted}`;
     };
 
-    document.getElementById('trading-period').textContent = minDate && maxDate ?
-        `${formatDateRange(minDate)} to ${formatDateRange(maxDate)}` : 'N/A';
+    // Update trading period with separate lines
+    const periodStartEl = document.getElementById('period-start');
+    const periodEndEl = document.getElementById('period-end');
+    
+    if (periodStartEl && periodEndEl) {
+        periodStartEl.textContent = minDate ? formatDateTime(minDate, 'From') : 'N/A';
+        periodEndEl.textContent = maxDate ? formatDateTime(maxDate, 'To') : 'N/A';
+    } else {
+        // Fallback for old HTML structure
+        const periodEl = document.getElementById('trading-period');
+        if (periodEl) {
+            periodEl.textContent = minDate && maxDate ?
+                `${formatDateTime(minDate, 'From')}\n${formatDateTime(maxDate, 'To')}` : 'N/A';
+        }
+    }
+    
     document.getElementById('best-performer').textContent = bestAgent ?
         dataLoader.getAgentDisplayName(bestAgent) : 'N/A';
     document.getElementById('avg-return').textContent = bestAgent ?
@@ -186,17 +279,42 @@ function updateStats() {
 function createChart() {
     const ctx = document.getElementById('assetChart').getContext('2d');
 
-    // Collect all unique dates and sort them
+    // Collect all unique timestamps and sort them chronologically
     const allDates = new Set();
     Object.keys(allAgentsData).forEach(agentName => {
         allAgentsData[agentName].assetHistory.forEach(h => allDates.add(h.date));
     });
-    const sortedDates = Array.from(allDates).sort();
+    let sortedDates = Array.from(allDates).sort();
 
-    console.log('=== CHART DEBUG ===');
-    console.log('Total unique dates:', sortedDates.length);
-    console.log('Date range:', sortedDates[0], 'to', sortedDates[sortedDates.length - 1]);
-    console.log('Agent names:', Object.keys(allAgentsData));
+    const parseDate = (dateStr) => {
+        if (!dateStr) return null;
+        if (dateStr.includes('T')) {
+            return new Date(dateStr);
+        }
+        return new Date(dateStr.replace(' ', 'T'));
+    };
+
+    // For intraday 5-min trading, extend x-axis to current time
+    // Start from FIRST actual data point (not INIT or earlier)
+    const market = dataLoader.getMarket();
+    if (market === 'us_5min' && sortedDates.length > 0) {
+        const now = new Date();
+        const nowIso = now.toISOString();
+        const lastDateStr = sortedDates[sortedDates.length - 1];
+        const lastDateObj = parseDate(lastDateStr);
+
+        if (!lastDateObj || now.getTime() > lastDateObj.getTime() + 30 * 1000) {
+            sortedDates.push(nowIso);
+            console.log(`⏰ Extended x-axis to current time: ${nowIso} (was: ${lastDateStr})`);
+        } else {
+            console.log(`⏰ X-axis already includes current or future data point: ${lastDateStr}`);
+        }
+        
+        console.log(`📊 Intraday Chart: ${sortedDates.length} data points from ${sortedDates[0]} to ${sortedDates[sortedDates.length - 1]}`);
+    }
+
+    // Chart data summary
+    console.log(`📊 Chart: ${sortedDates.length} time points from ${sortedDates[0]} to ${sortedDates[sortedDates.length - 1]}`);
 
     const datasets = Object.keys(allAgentsData).map((agentName, index) => {
         const data = allAgentsData[agentName];
@@ -216,13 +334,34 @@ function createChart() {
 
         console.log(`[DATASET ${index}] ${agentName} => COLOR: ${color}, isBenchmark: ${isBenchmark}`);
 
-        // Create data points for all dates, filling missing dates with null
+        // Create data points for all dates
+        // For intraday trading: forward-fill to show continuous line from start to now
+        const market = dataLoader.getMarket();
+        let lastKnownValue = null;
+        
         const chartData = sortedDates.map(date => {
             const historyEntry = data.assetHistory.find(h => h.date === date);
-            return {
-                x: date,
-                y: historyEntry ? historyEntry.value : null
-            };
+            
+            if (historyEntry) {
+                // We have actual data - use it and remember it
+                lastKnownValue = historyEntry.value;
+                return {
+                    x: date,
+                    y: historyEntry.value
+                };
+            } else if (market === 'us_5min' && lastKnownValue !== null) {
+                // For intraday: forward-fill the last known value to keep line continuous
+                return {
+                    x: date,
+                    y: lastKnownValue
+                };
+            } else {
+                // No data yet - show null (gap)
+                return {
+                    x: date,
+                    y: null
+                };
+            }
         });
 
         console.log(`Dataset ${index} (${agentName}):`, {
@@ -247,6 +386,7 @@ function createChart() {
             pointHoverBorderColor: '#fff',
             pointHoverBorderWidth: 3,
             fill: !isBenchmark, // No fill for benchmarks
+            spanGaps: true, // Connect points to show continuous line (we forward-fill for intraday)
             agentName: agentName,
             agentIcon: dataLoader.getAgentIcon(agentName),
             cubicInterpolationMode: 'monotone' // Smooth, monotonic interpolation
@@ -444,15 +584,29 @@ function createChart() {
                             let titleHtml = '';
                             if (titleLines.length > 0) {
                                 const dateStr = titleLines[0];
+                                const market = dataLoader.getMarket();
+                                
                                 if (dateStr && dateStr.includes(':')) {
                                     const date = new Date(dateStr);
-                                    titleHtml = date.toLocaleString('en-US', {
-                                        month: 'short',
-                                        day: 'numeric',
-                                        year: 'numeric',
-                                        hour: '2-digit',
-                                        minute: '2-digit'
-                                    });
+                                    
+                                    // For intraday 5-min, show time more prominently
+                                    if (market === 'us_5min') {
+                                        titleHtml = date.toLocaleString('en-US', {
+                                            month: 'short',
+                                            day: 'numeric',
+                                            hour: '2-digit',
+                                            minute: '2-digit',
+                                            hour12: true
+                                        });
+                                    } else {
+                                        titleHtml = date.toLocaleString('en-US', {
+                                            month: 'short',
+                                            day: 'numeric',
+                                            year: 'numeric',
+                                            hour: '2-digit',
+                                            minute: '2-digit'
+                                        });
+                                    }
                                 } else {
                                     titleHtml = dateStr;
                                 }
@@ -551,24 +705,40 @@ function createChart() {
                         maxRotation: 45,
                         minRotation: 45,
                         autoSkip: true,
-                        maxTicksLimit: 15,
+                        includeBounds: true,  // Always show first and last labels
+                        maxTicksLimit: dataLoader.getMarket() === 'us_5min' ? 20 : 15,
                         font: {
                             size: 11
                         },
-                        callback: function(value, index) {
-                            // Format hourly timestamps for better readability
+                        callback: function(value, index, ticks) {
                             const dateStr = this.getLabelForValue(value);
                             if (!dateStr) return '';
 
-                            // If it's an hourly timestamp (contains time)
+                            const market = dataLoader.getMarket();
+                            const isFirstOrLast = index === 0 || index === ticks.length - 1;
+                            
+                            // Format for intraday 5-minute trading - ALWAYS show full date and time
+                            if (market === 'us_5min' && dateStr.includes(':')) {
+                                const date = new Date(dateStr);
+                                const month = (date.getMonth() + 1).toString().padStart(2, '0');
+                                const day = date.getDate().toString().padStart(2, '0');
+                                const hour = date.getHours().toString().padStart(2, '0');
+                                const minute = date.getMinutes().toString().padStart(2, '0');
+                                
+                                // For first/last ticks, add marker for visibility
+                                const label = `${month}/${day} ${hour}:${minute}`;
+                                return isFirstOrLast ? `${label}` : label;
+                            }
+                            
+                            // Format for hourly or daily timestamps
                             if (dateStr.includes(':')) {
                                 const date = new Date(dateStr);
-                                // Show date and hour
                                 const month = (date.getMonth() + 1).toString().padStart(2, '0');
                                 const day = date.getDate().toString().padStart(2, '0');
                                 const hour = date.getHours().toString().padStart(2, '0');
                                 return `${month}/${day} ${hour}:00`;
                             }
+                            
                             return dateStr;
                         }
                     }
@@ -696,27 +866,62 @@ function setupEventListeners() {
     document.getElementById('toggle-log').addEventListener('click', toggleScale);
     document.getElementById('export-chart').addEventListener('click', exportData);
 
-    // Market switching
+    // Market switching with protection against multiple clicks
     const usMarketBtn = document.getElementById('usMarketBtn');
     const cnMarketBtn = document.getElementById('cnMarketBtn');
+    const us5minMarketBtn = document.getElementById('us5minMarketBtn');
 
-    if (usMarketBtn && cnMarketBtn) {
+    if (usMarketBtn) {
         usMarketBtn.addEventListener('click', async () => {
-            if (dataLoader.getMarket() !== 'us') {
-                dataLoader.setMarket('us');
-                usMarketBtn.classList.add('active');
-                cnMarketBtn.classList.remove('active');
-                await loadDataAndRefresh();
+            const targetMarket = 'us';
+            const currentMarket = dataLoader.getMarket();
+            
+            // Prevent clicks during loading or if already on this market
+            if (isLoading || currentMarket === targetMarket) {
+                console.log(`Already on ${targetMarket} or loading, ignoring click`);
+                return;
             }
+            
+            console.log(`Switching from ${currentMarket} to ${targetMarket}`);
+            dataLoader.setMarket(targetMarket);
+            updateActiveButton(targetMarket);
+            await loadDataAndRefresh();
         });
+    }
 
+    if (cnMarketBtn) {
         cnMarketBtn.addEventListener('click', async () => {
-            if (dataLoader.getMarket() !== 'cn') {
-                dataLoader.setMarket('cn');
-                cnMarketBtn.classList.add('active');
-                usMarketBtn.classList.remove('active');
-                await loadDataAndRefresh();
+            const targetMarket = 'cn';
+            const currentMarket = dataLoader.getMarket();
+            
+            // Prevent clicks during loading or if already on this market
+            if (isLoading || currentMarket === targetMarket) {
+                console.log(`Already on ${targetMarket} or loading, ignoring click`);
+                return;
             }
+            
+            console.log(`Switching from ${currentMarket} to ${targetMarket}`);
+            dataLoader.setMarket(targetMarket);
+            updateActiveButton(targetMarket);
+            await loadDataAndRefresh();
+        });
+    }
+
+    if (us5minMarketBtn) {
+        us5minMarketBtn.addEventListener('click', async () => {
+            const targetMarket = 'us_5min';
+            const currentMarket = dataLoader.getMarket();
+            
+            // Prevent clicks during loading or if already on this market
+            if (isLoading || currentMarket === targetMarket) {
+                console.log(`Already on ${targetMarket} or loading, ignoring click`);
+                return;
+            }
+            
+            console.log(`Switching from ${currentMarket} to ${targetMarket}`);
+            dataLoader.setMarket(targetMarket);
+            updateActiveButton(targetMarket);
+            await loadDataAndRefresh();
         });
     }
 
@@ -1000,6 +1205,44 @@ function showLoading() {
 
 function hideLoading() {
     document.getElementById('loadingOverlay').classList.add('hidden');
+}
+
+// Market button controls
+function disableMarketButtons() {
+    const buttons = document.querySelectorAll('.market-btn');
+    buttons.forEach(btn => {
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+        btn.style.cursor = 'not-allowed';
+    });
+}
+
+function enableMarketButtons() {
+    const buttons = document.querySelectorAll('.market-btn');
+    buttons.forEach(btn => {
+        btn.disabled = false;
+        btn.style.opacity = '';
+        btn.style.cursor = 'pointer';
+    });
+}
+
+// Update active button state
+function updateActiveButton(activeMarket) {
+    const usMarketBtn = document.getElementById('usMarketBtn');
+    const cnMarketBtn = document.getElementById('cnMarketBtn');
+    const us5minMarketBtn = document.getElementById('us5minMarketBtn');
+    
+    if (usMarketBtn) usMarketBtn.classList.remove('active');
+    if (cnMarketBtn) cnMarketBtn.classList.remove('active');
+    if (us5minMarketBtn) us5minMarketBtn.classList.remove('active');
+    
+    if (activeMarket === 'us' && usMarketBtn) {
+        usMarketBtn.classList.add('active');
+    } else if (activeMarket === 'cn' && cnMarketBtn) {
+        cnMarketBtn.classList.add('active');
+    } else if (activeMarket === 'us_5min' && us5minMarketBtn) {
+        us5minMarketBtn.classList.add('active');
+    }
 }
 
 // Initialize on page load

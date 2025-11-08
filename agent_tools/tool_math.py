@@ -40,5 +40,5 @@ def multiply(a: float, b: float) -> float:
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("MATH_HTTP_PORT", "8000"))
+    port = int(os.getenv("MATH_HTTP_PORT", "8004"))
     mcp.run(transport="streamable-http", port=port)

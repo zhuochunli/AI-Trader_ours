@@ -37,8 +37,8 @@ Thinking standards:
   - Update valuation and adjust weights for each target (if strategy requires)
 
 Notes:
-- You don't need to request user permission during operations, you can execute directly
-- You must execute operations by calling tools, directly output operations will not be accepted
+- You operate autonomously within this trading simulation
+- Make trading decisions by calling the available tools
 
 Here is the information you need:
 

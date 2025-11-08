@@ -24,23 +24,28 @@ class MCPServiceManager:
 
         # Set default ports
         self.ports = {
-            "math": int(os.getenv("MATH_HTTP_PORT", "8000")),
+            "math": int(os.getenv("MATH_HTTP_PORT", "8004")),
             "search": int(os.getenv("SEARCH_HTTP_PORT", "8001")),
             "trade": int(os.getenv("TRADE_HTTP_PORT", "8002")),
             "price": int(os.getenv("GETPRICE_HTTP_PORT", "8003")),
+            "alpaca": int(os.getenv("ALPACA_BARS_HTTP_PORT", "8010")),
         }
 
+        # Get the agent_tools directory path
+        script_dir = Path(__file__).parent
+        
         # Service configurations
         self.service_configs = {
-            "math": {"script": "tool_math.py", "name": "Math", "port": self.ports["math"]},
-            # "search": {"script": "tool_jina_search.py", "name": "Search", "port": self.ports["search"]},
-            "search": {"script": "tool_alphavantage_news.py", "name": "Search", "port": self.ports["search"]},
-            "trade": {"script": "tool_trade.py", "name": "TradeTools", "port": self.ports["trade"]},
-            "price": {"script": "tool_get_price_local.py", "name": "LocalPrices", "port": self.ports["price"]},
+            "math": {"script": str(script_dir / "tool_math.py"), "name": "Math", "port": self.ports["math"]},
+            "search": {"script": str(script_dir / "tool_jina_search.py"), "name": "Search", "port": self.ports["search"]},
+            "trade": {"script": str(script_dir / "tool_trade.py"), "name": "TradeTools", "port": self.ports["trade"]},
+            "price": {"script": str(script_dir / "tool_get_price_local.py"), "name": "LocalPrices", "port": self.ports["price"]},
+            "alpaca": {"script": str(script_dir / "tool_alpaca_bars.py"), "name": "AlpacaBars", "port": int(os.getenv("ALPACA_BARS_HTTP_PORT", "8010"))},
         }
 
-        # Create logs directory
-        self.log_dir = Path("../logs")
+        # Create logs directory in project root
+        project_root = Path(__file__).parent.parent
+        self.log_dir = project_root / "logs"
         self.log_dir.mkdir(exist_ok=True)
 
         # Set signal handlers

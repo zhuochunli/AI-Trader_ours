@@ -5,12 +5,45 @@ const dataLoader = new DataLoader();
 let allAgentsData = {};
 let currentAgent = null;
 let allocationChart = null;
+let isLoading = false; // Flag to prevent multiple simultaneous loads
+
+// Update subtitle based on current market
+function updateMarketSubtitle() {
+    const marketConfig = dataLoader.getMarketConfig();
+    const subtitleElement = document.getElementById('marketSubtitle');
+    
+    if (marketConfig && subtitleElement) {
+        // Custom subtitles for portfolio page
+        const subtitles = {
+            'us': 'Daily Trading Portfolio - Detailed analysis of holdings and performance',
+            'us_5min': 'Intraday Trading Portfolio - Detailed position analysis',
+            'cn': 'A-share market portfolio breakdown and holdings analysis'
+        };
+        
+        const market = dataLoader.getMarket();
+        subtitleElement.textContent = subtitles[market] || subtitles['us_5min'];
+    }
+}
 
 // Load data and refresh UI
 async function loadDataAndRefresh() {
+    // Prevent multiple simultaneous loads
+    if (isLoading) {
+        console.log('Already loading, skipping...');
+        return;
+    }
+    
+    isLoading = true;
     showLoading();
+    disableMarketButtons();
 
     try {
+        // Ensure config is loaded first
+        await dataLoader.initialize();
+        
+        // Update subtitle for the current market
+        updateMarketSubtitle();
+        
         // Load all agents data
         console.log('Loading all agents data...');
         allAgentsData = await dataLoader.loadAllAgentsData();
@@ -28,16 +61,83 @@ async function loadDataAndRefresh() {
 
     } catch (error) {
         console.error('Error loading data:', error);
-        alert('Failed to load portfolio data. Please check console for details.');
+        
+        // Show error message in the UI instead of alert
+        if (Object.keys(allAgentsData || {}).length === 0) {
+            const container = document.querySelector('.container');
+            if (container) {
+                const errorMsg = document.createElement('div');
+                errorMsg.style.cssText = 'margin: 20px; padding: 20px; background: #fff3cd; border-radius: 8px; color: #856404; text-align: center;';
+                errorMsg.innerHTML = `
+                    <strong>ℹ️ No agents found</strong><br>
+                    ${dataLoader.getMarket() === 'us_5min' ? 
+                        'Make sure your 5-minute trading agent is running. It may take a few moments for data to appear.' :
+                        'No trading data available for this market. Please check your configuration.'
+                    }
+                `;
+                container.insertBefore(errorMsg, container.firstElementChild.nextSibling);
+                
+                // Auto-remove message after 5 seconds
+                setTimeout(() => errorMsg.remove(), 5000);
+            }
+        }
     } finally {
         hideLoading();
+        enableMarketButtons();
+        isLoading = false;
     }
 }
+
+// Button management functions
+function disableMarketButtons() {
+    const buttons = document.querySelectorAll('.market-btn');
+    buttons.forEach(btn => {
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+        btn.style.cursor = 'not-allowed';
+    });
+}
+
+function enableMarketButtons() {
+    const buttons = document.querySelectorAll('.market-btn');
+    buttons.forEach(btn => {
+        btn.disabled = false;
+        btn.style.opacity = '';
+        btn.style.cursor = 'pointer';
+    });
+}
+
+// Update active button state
+function updateActiveButton(activeMarket) {
+    const usMarketBtn = document.getElementById('usMarketBtn');
+    const cnMarketBtn = document.getElementById('cnMarketBtn');
+    const us5minMarketBtn = document.getElementById('us5minMarketBtn');
+    
+    if (usMarketBtn) usMarketBtn.classList.remove('active');
+    if (cnMarketBtn) cnMarketBtn.classList.remove('active');
+    if (us5minMarketBtn) us5minMarketBtn.classList.remove('active');
+    
+    if (activeMarket === 'us' && usMarketBtn) {
+        usMarketBtn.classList.add('active');
+    } else if (activeMarket === 'cn' && cnMarketBtn) {
+        cnMarketBtn.classList.add('active');
+    } else if (activeMarket === 'us_5min' && us5minMarketBtn) {
+        us5minMarketBtn.classList.add('active');
+    }
+}
+
+// Expose loadAllData for live refresh
+window.loadAllData = async function() {
+    await loadDataAndRefresh();
+};
 
 // Initialize the page
 async function init() {
     // Set up event listeners first
     setupEventListeners();
+    
+    // Set initial button state based on current market
+    updateActiveButton(dataLoader.getMarket());
 
     // Load initial data
     await loadDataAndRefresh();
@@ -66,7 +166,7 @@ async function loadAgentPortfolio(agentName) {
         const data = allAgentsData[agentName];
 
         // Update performance metrics
-        updateMetrics(data);
+        await updateMetrics(data);
 
         // Update holdings table
         await updateHoldingsTable(agentName);
@@ -85,12 +185,43 @@ async function loadAgentPortfolio(agentName) {
 }
 
 // Update performance metrics
-function updateMetrics(data) {
-    const totalAsset = data.currentValue;
-    const totalReturn = data.return;
+async function updateMetrics(data) {
+    let totalAsset = data.currentValue;
     const latestPosition = data.positions && data.positions.length > 0 ? data.positions[data.positions.length - 1] : null;
     const cashPosition = latestPosition && latestPosition.positions ? latestPosition.positions.CASH || 0 : 0;
     const totalTrades = data.positions ? data.positions.filter(p => p.this_action).length : 0;
+
+    // For intraday trading, recalculate total asset value with current prices
+    const market = dataLoader.getMarket();
+    if (market === 'us_5min' && latestPosition) {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        const priceDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+        
+        let stockValue = 0;
+        for (const [symbol, shares] of Object.entries(latestPosition.positions)) {
+            if (symbol !== 'CASH' && shares > 0) {
+                const price = await dataLoader.getClosingPrice(symbol, priceDate);
+                if (price) {
+                    stockValue += shares * price;
+                }
+            }
+        }
+        totalAsset = cashPosition + stockValue;
+    }
+
+    // Synchronize in-memory data with recalculated totals
+    data.currentValue = totalAsset;
+    if (data.assetHistory && data.assetHistory.length > 0) {
+        data.assetHistory[data.assetHistory.length - 1].value = totalAsset;
+    }
+
+    const totalReturn = data.initialValue ? ((totalAsset - data.initialValue) / data.initialValue * 100) : 0;
 
     document.getElementById('totalAsset').textContent = dataLoader.formatCurrency(totalAsset);
     document.getElementById('totalReturn').textContent = dataLoader.formatPercent(totalReturn);
@@ -105,32 +236,56 @@ async function updateHoldingsTable(agentName) {
     const tableBody = document.getElementById('holdingsTableBody');
     tableBody.innerHTML = '';
 
-    if (!holdings) {
-        return;
-    }
-
     const data = allAgentsData[agentName];
     if (!data || !data.assetHistory || data.assetHistory.length === 0) {
         return;
     }
 
-    const latestDate = data.assetHistory[data.assetHistory.length - 1].date;
-    const totalValue = data.currentValue;
+    if (!holdings || Object.keys(holdings).length === 0) {
+        const noDataRow = document.createElement('tr');
+        noDataRow.innerHTML = `
+            <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                No holdings data available
+            </td>
+        `;
+        tableBody.appendChild(noDataRow);
+        return;
+    }
+
+    // For intraday trading, use current time to get latest prices
+    const market = dataLoader.getMarket();
+    let priceDate;
+    if (market === 'us_5min') {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        priceDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    } else {
+        priceDate = data.assetHistory[data.assetHistory.length - 1].date;
+    }
 
     // Get all stocks with non-zero holdings
     const stocks = Object.entries(holdings)
-        .filter(([symbol, shares]) => symbol !== 'CASH' && shares > 0);
+        .filter(([symbol, shares]) => symbol !== 'CASH');
 
     // Sort by market value (descending)
     const holdingsData = await Promise.all(
         stocks.map(async ([symbol, shares]) => {
-            const price = await dataLoader.getClosingPrice(symbol, latestDate);
+            const price = await dataLoader.getClosingPrice(symbol, priceDate);
             const marketValue = price ? shares * price : 0;
             return { symbol, shares, price, marketValue };
         })
     );
 
     holdingsData.sort((a, b) => b.marketValue - a.marketValue);
+
+    // Calculate total value with current prices
+    const totalStockValue = holdingsData.reduce((sum, h) => sum + h.marketValue, 0);
+    const totalValue = totalStockValue + (holdings.CASH || 0);
 
     // Create table rows
     holdingsData.forEach(holding => {
@@ -147,14 +302,15 @@ async function updateHoldingsTable(agentName) {
     });
 
     // Add cash row
-    if (holdings.CASH > 0) {
-        const cashWeight = (holdings.CASH / totalValue * 100).toFixed(2);
+    if (holdings.CASH !== undefined) {
+        const cashAmount = holdings.CASH || 0;
+        const cashWeight = totalValue > 0 ? (cashAmount / totalValue * 100).toFixed(2) : 0;
         const cashRow = document.createElement('tr');
         cashRow.innerHTML = `
             <td class="symbol">CASH</td>
             <td>-</td>
             <td>-</td>
-            <td>${dataLoader.formatCurrency(holdings.CASH)}</td>
+            <td>${dataLoader.formatCurrency(cashAmount)}</td>
             <td>${cashWeight}%</td>
         `;
         tableBody.appendChild(cashRow);
@@ -178,22 +334,48 @@ async function updateAllocationChart(agentName) {
     if (!holdings) return;
 
     const data = allAgentsData[agentName];
-    const latestDate = data.assetHistory[data.assetHistory.length - 1].date;
+    
+    const values = [];
+    // For intraday trading, use current time to get latest prices
+    const market = dataLoader.getMarket();
+    let priceDate;
+    if (market === 'us_5min') {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        priceDate = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    } else {
+        priceDate = data.assetHistory[data.assetHistory.length - 1].date;
+    }
 
     // Calculate market values
     const allocations = [];
+    let totalValue = 0;
 
     for (const [symbol, shares] of Object.entries(holdings)) {
         if (symbol === 'CASH') {
-            if (shares > 0) {
-                allocations.push({ label: 'CASH', value: shares });
+            if (shares !== undefined) {
+                const cashValue = shares || 0;
+                allocations.push({ label: 'CASH', value: cashValue });
+                totalValue += cashValue;
             }
         } else if (shares > 0) {
-            const price = await dataLoader.getClosingPrice(symbol, latestDate);
+            const price = await dataLoader.getClosingPrice(symbol, priceDate);
             if (price) {
-                allocations.push({ label: symbol, value: shares * price });
+                const value = shares * price;
+                allocations.push({ label: symbol, value });
+                totalValue += value;
             }
         }
+    }
+
+    if (allocations.length === 0) {
+        allocations.push({ label: 'CASH', value: holdings.CASH || 0 });
+        totalValue = holdings.CASH || 0;
     }
 
     // Sort by value and take top 10, combine rest as "Others"
@@ -318,27 +500,59 @@ function setupEventListeners() {
         loadAgentPortfolio(e.target.value);
     });
 
-    // Market switching
+    // Market switching with protection against multiple clicks
     const usMarketBtn = document.getElementById('usMarketBtn');
     const cnMarketBtn = document.getElementById('cnMarketBtn');
+    const us5minMarketBtn = document.getElementById('us5minMarketBtn');
 
-    if (usMarketBtn && cnMarketBtn) {
+    if (usMarketBtn) {
         usMarketBtn.addEventListener('click', async () => {
-            if (dataLoader.getMarket() !== 'us') {
-                dataLoader.setMarket('us');
-                usMarketBtn.classList.add('active');
-                cnMarketBtn.classList.remove('active');
-                await loadDataAndRefresh();
+            const targetMarket = 'us';
+            const currentMarket = dataLoader.getMarket();
+            
+            if (currentMarket === targetMarket) {
+                console.log(`Already on ${targetMarket}, ignoring click`);
+                return;
             }
+            
+            console.log(`Switching from ${currentMarket} to ${targetMarket}`);
+            dataLoader.setMarket(targetMarket);
+            updateActiveButton(targetMarket);
+            await loadDataAndRefresh();
         });
+    }
 
+    if (cnMarketBtn) {
         cnMarketBtn.addEventListener('click', async () => {
-            if (dataLoader.getMarket() !== 'cn') {
-                dataLoader.setMarket('cn');
-                cnMarketBtn.classList.add('active');
-                usMarketBtn.classList.remove('active');
-                await loadDataAndRefresh();
+            const targetMarket = 'cn';
+            const currentMarket = dataLoader.getMarket();
+            
+            if (currentMarket === targetMarket) {
+                console.log(`Already on ${targetMarket}, ignoring click`);
+                return;
             }
+            
+            console.log(`Switching from ${currentMarket} to ${targetMarket}`);
+            dataLoader.setMarket(targetMarket);
+            updateActiveButton(targetMarket);
+            await loadDataAndRefresh();
+        });
+    }
+
+    if (us5minMarketBtn) {
+        us5minMarketBtn.addEventListener('click', async () => {
+            const targetMarket = 'us_5min';
+            const currentMarket = dataLoader.getMarket();
+            
+            if (currentMarket === targetMarket) {
+                console.log(`Already on ${targetMarket}, ignoring click`);
+                return;
+            }
+            
+            console.log(`Switching from ${currentMarket} to ${targetMarket}`);
+            dataLoader.setMarket(targetMarket);
+            updateActiveButton(targetMarket);
+            await loadDataAndRefresh();
         });
     }
 

@@ -362,13 +362,23 @@ def get_yesterday_date(today_date: str, merged_path: Optional[str] = None, marke
     Returns:
         yesterday_date: 上一个交易日或时间点的字符串，格式与输入一致。
     """
-    # 解析输入日期/时间
-    if ' ' in today_date:
-        input_dt = datetime.strptime(today_date, "%Y-%m-%d %H:%M:%S")
+    # 解析输入日期/时间 - handle both old format and ISO 8601
+    try:
+        # Try ISO 8601 format first (e.g., "2025-11-07T12:53:09-05:00")
+        input_dt = datetime.fromisoformat(today_date)
         date_only = False
-    else:
-        input_dt = datetime.strptime(today_date, "%Y-%m-%d")
-        date_only = True
+    except:
+        if ' ' in today_date or 'T' in today_date:
+            # Has time component
+            try:
+                input_dt = datetime.strptime(today_date, "%Y-%m-%d %H:%M:%S")
+            except:
+                # Fallback: parse as ISO without timezone
+                input_dt = datetime.strptime(today_date.split('T')[0] + ' ' + today_date.split('T')[1].split('-')[0].split('+')[0], "%Y-%m-%d %H:%M:%S")
+            date_only = False
+        else:
+            input_dt = datetime.strptime(today_date, "%Y-%m-%d")
+            date_only = True
     
     # 获取 merged.jsonl 文件路径
     if merged_path is None:
@@ -865,3 +875,202 @@ if __name__ == "__main__":
     # yesterday_profit = get_yesterday_profit(today_date, yesterday_buy_prices, yesterday_sell_prices, today_init_position)
     # # print(yesterday_profit)
     # add_no_trade_record(today_date, signature)
+
+
+def format_5min_bars(bars: List[Dict[str, any]], max_bars: int = 50) -> str:
+    """
+    Format 5-minute bars data into a readable string for the agent prompt.
+    
+    Args:
+        bars: List of bar dictionaries with timestamp, open, high, low, close, volume
+        max_bars: Maximum number of bars to include in output (default 50)
+    
+    Returns:
+        Formatted string with bar data
+    """
+    if not bars:
+        return "No bar data available"
+    
+    # Limit number of bars to avoid overwhelming the prompt
+    display_bars = bars[-max_bars:] if len(bars) > max_bars else bars
+    
+    lines = []
+    lines.append("Time          | Open    | High    | Low     | Close   | Volume")
+    lines.append("-" * 70)
+    
+    for bar in display_bars:
+        # Parse timestamp - handle both ISO format and readable format
+        timestamp = bar.get("timestamp", "")
+        if "T" in timestamp:
+            # Convert ISO format to readable
+            try:
+                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                time_str = dt.strftime("%m/%d %H:%M")
+            except:
+                time_str = timestamp[:16].replace("T", " ")
+        else:
+            time_str = timestamp
+        
+        open_price = bar.get("open", 0)
+        high_price = bar.get("high", 0)
+        low_price = bar.get("low", 0)
+        close_price = bar.get("close", 0)
+        volume = bar.get("volume", 0)
+        
+        lines.append(f"{time_str:13} | ${open_price:6.2f} | ${high_price:6.2f} | ${low_price:6.2f} | ${close_price:6.2f} | {volume:,}")
+    
+    return "\n".join(lines)
+
+
+def get_5min_current_price(bars: List[Dict[str, any]]) -> Optional[float]:
+    """
+    Get the current (most recent) price from 5-minute bars.
+    
+    Args:
+        bars: List of bar dictionaries
+    
+    Returns:
+        Most recent close price or None if no bars available
+    """
+    if not bars:
+        return None
+    
+    # Get the last bar's close price
+    return bars[-1].get("close")
+
+
+def get_5min_yesterday_close(bars: List[Dict[str, any]], current_time: str) -> Optional[float]:
+    """
+    Get yesterday's closing price from 5-minute bars.
+    For intraday trading, "yesterday" means the previous trading day's last bar.
+    
+    Args:
+        bars: List of bar dictionaries with timestamp field
+        current_time: Current time string in format "YYYY-MM-DD HH:MM:SS"
+    
+    Returns:
+        Yesterday's close price or None if not found
+    """
+    if not bars:
+        return None
+    
+    try:
+        # Parse current time to determine yesterday's date
+        current_dt = datetime.strptime(current_time, "%Y-%m-%d %H:%M:%S")
+        yesterday_date = (current_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+        
+        # Find the last bar from yesterday
+        yesterday_bars = []
+        for bar in bars:
+            timestamp = bar.get("timestamp", "")
+            if timestamp.startswith(yesterday_date):
+                yesterday_bars.append(bar)
+        
+        if yesterday_bars:
+            return yesterday_bars[-1].get("close")
+        
+        # If no yesterday data, return the first bar's close as fallback
+        return bars[0].get("close") if bars else None
+        
+    except Exception as e:
+        print(f"Error getting yesterday close: {e}")
+        return None
+
+
+def split_bars_by_date(bars: List[Dict[str, any]], date: str) -> Tuple[List[Dict[str, any]], List[Dict[str, any]]]:
+    """
+    Split bars into yesterday's bars and today's bars based on a date.
+    
+    Args:
+        bars: List of bar dictionaries with timestamp field
+        date: Date string in format "YYYY-MM-DD"
+    
+    Returns:
+        Tuple of (yesterday_bars, today_bars)
+    """
+    yesterday_bars = []
+    today_bars = []
+    
+    for bar in bars:
+        timestamp = bar.get("timestamp", "")
+        if date in timestamp:
+            today_bars.append(bar)
+        else:
+            # Check if it's from a day before the target date
+            try:
+                if "T" in timestamp:
+                    bar_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                else:
+                    bar_dt = datetime.strptime(timestamp[:10], "%Y-%m-%d")
+                
+                target_dt = datetime.strptime(date, "%Y-%m-%d")
+                
+                if bar_dt.date() < target_dt.date():
+                    yesterday_bars.append(bar)
+                elif bar_dt.date() > target_dt.date():
+                    today_bars.append(bar)
+            except:
+                continue
+    
+    return yesterday_bars, today_bars
+
+
+def get_yesterday_full_day_bars(symbol: str, today_date: str) -> List[Dict[str, any]]:
+    """
+    Get full day 5-minute bars for yesterday (previous trading day).
+    This function would typically call the Alpaca API tool to fetch historical data.
+    
+    Args:
+        symbol: Stock symbol
+        today_date: Today's date string in format "YYYY-MM-DD"
+    
+    Returns:
+        List of yesterday's 5-minute bars
+    """
+    try:
+        # Handle both date-only and datetime formats (including ISO 8601)
+        if 'T' in today_date or ' ' in today_date:
+            # Has time component - extract date part
+            try:
+                today_dt = datetime.fromisoformat(today_date)
+            except:
+                # Fallback: extract date part manually
+                date_part = today_date.split('T')[0] if 'T' in today_date else today_date.split()[0]
+                today_dt = datetime.strptime(date_part, "%Y-%m-%d")
+        else:
+            today_dt = datetime.strptime(today_date, "%Y-%m-%d")
+        # Go back to find the previous trading day
+        # Simplified: just go back 1 day (would need market calendar for production)
+        yesterday_dt = today_dt - timedelta(days=1)
+        # Skip weekends
+        while yesterday_dt.weekday() >= 5:
+            yesterday_dt -= timedelta(days=1)
+        
+        yesterday_str = yesterday_dt.strftime("%Y-%m-%d")
+        
+        # This would call the Alpaca API tool
+        # For now, return empty list - the actual implementation would use MCP tool
+        # In practice, the agent would call get_5min_bars tool directly
+        return []
+        
+    except Exception as e:
+        print(f"Error getting yesterday bars: {e}")
+        return []
+
+
+def get_today_bars_until_now(symbol: str, today_date: str, current_time: str) -> List[Dict[str, any]]:
+    """
+    Get today's 5-minute bars from market open until current time.
+    This function would typically call the Alpaca API tool.
+    
+    Args:
+        symbol: Stock symbol
+        today_date: Today's date string
+        current_time: Current time string
+    
+    Returns:
+        List of today's 5-minute bars up to current time
+    """
+    # This would call the Alpaca API tool
+    # The actual implementation would use MCP tool
+    return []
