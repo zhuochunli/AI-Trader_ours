@@ -52,6 +52,7 @@ markets:
     icon: "🇺🇸"
     price_data_type: "individual"
     time_granularity: "5min"  # 5-minute intervals
+    auto_detect_agents: true
     enabled: true
     agents:  # Intraday 5-min agents
       - folder: "gpt-4o-mini"

@@ -347,12 +347,15 @@ class BaseAgent_5Min(BaseAgent):
             "live_mode": True,
             "start_time": start_time_iso,
             "display_name": self._get_display_name(),
-            "color": self._get_color_from_model()
+            "color": self._get_color_from_model(),
+            "icon": self._get_icon_from_model()
         }
         
         metadata_file = os.path.join(self.data_path, "agent_config.json")
         with open(metadata_file, "w") as f:
             json.dump(metadata, f, indent=2)
+        
+        self._update_live_agents_manifest(metadata)
         
         print(f"✅ Initialized with ${self.initial_cash} cash, all positions at 0")
         print(f"📊 Trading stocks: {', '.join(self.trading_symbols)}")
@@ -388,6 +391,63 @@ class BaseAgent_5Min(BaseAgent):
             return "#00ffcc"
         else:
             return "#3a86ff"
+    
+    def _get_icon_from_model(self) -> str:
+        """Get icon path for frontend based on model"""
+        model_lower = self.basemodel.lower()
+        if "gpt" in model_lower or "openai" in model_lower:
+            return "./figs/openai.svg"
+        elif "claude" in model_lower or "anthropic" in model_lower:
+            return "./figs/claude-color.svg"
+        elif "gemini" in model_lower or "google" in model_lower:
+            return "./figs/google.svg"
+        elif "deepseek" in model_lower:
+            return "./figs/deepseek.svg"
+        elif "qwen" in model_lower:
+            return "./figs/qwen.svg"
+        else:
+            return "./figs/stock.svg"
+    
+    def _update_live_agents_manifest(self, metadata: Dict[str, Any]) -> None:
+        """Update live agents manifest for frontend auto-detection."""
+        try:
+            base_path = self.base_log_path if os.path.isabs(self.base_log_path) else os.path.join(Path(__file__).resolve().parents[2], self.base_log_path)
+            manifest_path = os.path.join(base_path, "live_agents.json")
+            os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+            
+            existing: List[Dict[str, Any]] = []
+            if os.path.exists(manifest_path):
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    if isinstance(loaded, list):
+                        existing = loaded
+            
+            entry = {
+                "folder": self.signature,
+                "display_name": metadata.get("display_name", self.signature),
+                "icon": metadata.get("icon", "./figs/stock.svg"),
+                "color": metadata.get("color"),
+                "basemodel": metadata.get("basemodel"),
+                "stock_symbols": metadata.get("stock_symbols", []),
+                "live_mode": metadata.get("live_mode", True),
+                "start_time": metadata.get("start_time"),
+                "enabled": True
+            }
+            
+            updated = False
+            for idx, item in enumerate(existing):
+                if isinstance(item, dict) and item.get("folder") == self.signature:
+                    existing[idx] = {**item, **entry}
+                    updated = True
+                    break
+            
+            if not updated:
+                existing.append(entry)
+            
+            with open(manifest_path, "w", encoding="utf-8") as f:
+                json.dump(existing, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            print(f"⚠️  Warning: failed to update live agents manifest for {self.signature}: {exc}")
     
     def is_market_open(self) -> bool:
         """

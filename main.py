@@ -1,10 +1,13 @@
+import argparse
 import asyncio
 import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from pathlib import Path as _Path
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
+import sys
 
 load_dotenv()
 
@@ -102,7 +105,34 @@ def load_config(config_path=None):
         exit(1)
 
 
-async def main(config_path=None):
+async def _spawn_live_model_subprocesses(config_path: str, enabled_models: List[Dict[str, Any]]) -> None:
+    """Launch each live model in its own subprocess so agents can run concurrently."""
+    tasks = []
+    python_exec = sys.executable
+    this_file = str(Path(__file__).resolve())
+
+    for model in enabled_models:
+        signature = model.get("signature")
+        if not signature:
+            continue
+        cmd = [python_exec, this_file]
+        if config_path:
+            cmd.append(config_path)
+        cmd.extend(["--signature", signature])
+        print(f"🧩 Launching live agent subprocess for '{signature}': {' '.join(cmd)}")
+        proc = await asyncio.create_subprocess_exec(*cmd)
+        tasks.append(proc.wait())
+
+    if tasks:
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            raise
+
+
+async def main(config_path=None, only_signature: str | None = None):
     """Run trading experiment using BaseAgent class
 
     Args:
@@ -110,6 +140,10 @@ async def main(config_path=None):
     """
     # Load configuration file
     config = load_config(config_path)
+    if config_path is None:
+        resolved_config_path = Path(__file__).parent / "configs" / "default_config.json"
+    else:
+        resolved_config_path = Path(config_path)
 
     # Get Agent type
     agent_type = config.get("agent_type", "BaseAgent")
@@ -155,7 +189,14 @@ async def main(config_path=None):
         exit(1)
 
     # Get model list from configuration file (only select enabled models)
-    enabled_models = [model for model in config["models"] if model.get("enabled", True)]
+    enabled_models = [
+        model for model in config["models"] if model.get("enabled", True)
+    ]
+    if only_signature:
+        enabled_models = [m for m in enabled_models if m.get("signature") == only_signature]
+        if not enabled_models:
+            print(f"❌ No enabled model found with signature '{only_signature}'")
+            return
 
     # Get agent configuration
     agent_config = config.get("agent_config", {})
@@ -175,6 +216,18 @@ async def main(config_path=None):
     print(
         f"⚙️  Agent config: max_steps={max_steps}, max_retries={max_retries}, base_delay={base_delay}, initial_cash={initial_cash}"
     )
+
+    config_path_str = str(resolved_config_path)
+    is_live_mode = agent_type == "BaseAgent_5Min" and config.get("live_mode", False)
+    if (
+        is_live_mode
+        and len(enabled_models) > 1
+        and only_signature is None
+    ):
+        print("⚡ Multiple live 5-min agents enabled; launching each in its own subprocess...")
+        await _spawn_live_model_subprocesses(config_path_str, enabled_models)
+        print("🎉 All live agent subprocesses have exited")
+        return
 
     for model_config in enabled_models:
         # Read basemodel and signature directly from configuration file
@@ -307,16 +360,26 @@ async def main(config_path=None):
 
 
 if __name__ == "__main__":
-    import sys
+    parser = argparse.ArgumentParser(description="AI-Trader live agent runner")
+    parser.add_argument(
+        "config_path",
+        nargs="?",
+        default=None,
+        help="Path to config JSON (defaults to configs/default_config.json)",
+    )
+    parser.add_argument(
+        "--signature",
+        dest="signature",
+        default=None,
+        help="Run only the specified model signature",
+    )
+    args = parser.parse_args()
 
-    # Support specifying configuration file through command line arguments
-    # Usage: python livebaseagent_config.py [config_path]
-    # Example: python livebaseagent_config.py configs/my_config.json
-    config_path = sys.argv[1] if len(sys.argv) > 1 else None
-
-    if config_path:
-        print(f"📄 Using specified configuration file: {config_path}")
+    if args.config_path:
+        print(f"📄 Using specified configuration file: {args.config_path}")
     else:
-        print(f"📄 Using default configuration file: configs/default_config.json")
+        print("📄 Using default configuration file: configs/default_config.json")
+    if args.signature:
+        print(f"🎯 Filtering to single signature: {args.signature}")
 
-    asyncio.run(main(config_path))
+    asyncio.run(main(args.config_path, args.signature))

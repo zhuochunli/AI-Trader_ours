@@ -7,7 +7,8 @@
   "initial_cash": 10000.0,
   "market": "us",
   "live_mode": true,
-  "start_time": "2025-11-07T20:42:30-05:00",
+  "start_time": "2025-11-07T21:53:31-05:00",
   "display_name": "GPT-4o",
-  "color": "#ffbe0b"
+  "color": "#ffbe0b",
+  "icon": "./figs/openai.svg"
 }

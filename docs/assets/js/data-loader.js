@@ -10,6 +10,7 @@ class DataLoader {
         this.baseDataPath = './data';
         // Load market from localStorage or default to 'us_5min'
         this.currentMarket = this.loadMarketFromStorage() || 'us_5min';
+        this.liveAgentMetadata = {};
     }
 
     // Save market selection to localStorage
@@ -78,9 +79,17 @@ class DataLoader {
             if (this.currentMarket === 'us_5min' && marketConfig.auto_detect_agents && window.LiveLoader) {
                 console.log('🔴 Auto-detecting live 5-min agents...');
                 const liveAgents = await window.LiveLoader.autoDetectLiveAgents(marketConfig);
-                for (const agentConfig of liveAgents) {
-                    agents.push(agentConfig.folder);
-                    console.log(`✅ Found live agent: ${agentConfig.folder}`);
+                if (Array.isArray(liveAgents)) {
+                    this.liveAgentMetadata = {};
+                    for (const agentConfig of liveAgents) {
+                        if (!agentConfig || !agentConfig.folder) continue;
+                        agents.push(agentConfig.folder);
+                        this.liveAgentMetadata[agentConfig.folder] = agentConfig;
+                        console.log(`✅ Found live agent: ${agentConfig.folder}`);
+                    }
+                    if (window.configLoader && typeof window.configLoader.upsertLiveAgents === 'function') {
+                        window.configLoader.upsertLiveAgents(this.currentMarket, liveAgents);
+                    }
                 }
                 
                 // Enable auto-refresh for live data
@@ -938,6 +947,10 @@ class DataLoader {
 
     // Get nice display name for agent
     getAgentDisplayName(agentName) {
+        const liveMeta = this.liveAgentMetadata[agentName];
+        if (liveMeta && liveMeta.display_name) {
+            return liveMeta.display_name;
+        }
         const displayName = window.configLoader.getDisplayName(agentName, this.currentMarket);
         if (displayName) return displayName;
 
@@ -957,6 +970,10 @@ class DataLoader {
 
     // Get icon for agent (SVG file path)
     getAgentIcon(agentName) {
+        const liveMeta = this.liveAgentMetadata[agentName];
+        if (liveMeta && liveMeta.icon) {
+            return liveMeta.icon;
+        }
         const icon = window.configLoader.getIcon(agentName, this.currentMarket);
         if (icon) return icon;
 
@@ -982,6 +999,10 @@ class DataLoader {
 
     // Get brand color for agent
     getAgentBrandColor(agentName) {
+        const liveMeta = this.liveAgentMetadata[agentName];
+        if (liveMeta && liveMeta.color) {
+            return liveMeta.color;
+        }
         const color = window.configLoader.getColor(agentName, this.currentMarket);
         console.log(`[getAgentBrandColor] agentName: ${agentName}, market: ${this.currentMarket}, color: ${color}`);
         if (color) return color;

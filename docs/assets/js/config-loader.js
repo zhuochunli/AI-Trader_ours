@@ -185,6 +185,34 @@ class ConfigLoader {
         }
         return enabledMarkets;
     }
+
+    // Merge live agents detected at runtime into market config
+    upsertLiveAgents(marketId, agents = []) {
+        if (!this.config || !Array.isArray(agents) || agents.length === 0) {
+            return;
+        }
+        this.config.markets = this.config.markets || {};
+        const market = this.config.markets[marketId] || (this.config.markets[marketId] = {});
+        market.agents = market.agents || [];
+
+        for (const agent of agents) {
+            if (!agent || !agent.folder) continue;
+            const existingIndex = market.agents.findIndex(a => a.folder === agent.folder);
+            const mergedAgent = {
+                folder: agent.folder,
+                display_name: agent.display_name || agent.folder,
+                icon: agent.icon || './figs/stock.svg',
+                color: agent.color || null,
+                enabled: agent.enabled !== false,
+                basemodel: agent.basemodel || null
+            };
+            if (existingIndex >= 0) {
+                market.agents[existingIndex] = { ...market.agents[existingIndex], ...mergedAgent };
+            } else {
+                market.agents.push(mergedAgent);
+            }
+        }
+    }
 }
 
 // Create a global instance

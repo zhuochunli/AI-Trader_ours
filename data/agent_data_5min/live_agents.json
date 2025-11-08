@@ -1,0 +1,17 @@
+[
+  {
+    "folder": "gpt-4o-mini",
+    "display_name": "GPT-4o",
+    "icon": "./figs/openai.svg",
+    "color": "#ffbe0b",
+    "basemodel": "gpt-4o-mini",
+    "stock_symbols": [
+      "AAPL"
+    ],
+    "live_mode": true,
+    "start_time": "2025-11-07T21:53:31-05:00",
+    "enabled": true
+  }
+] "enabled": true
+  }
+]

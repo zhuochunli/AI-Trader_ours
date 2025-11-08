@@ -24,6 +24,14 @@
       "enabled": true
     },
     {
+      "name": "deepseek-chat",
+      "basemodel": "deepseek/deepseek-chat",
+      "signature": "deepseek-chat",
+      "enabled": true,
+      "openai_base_url": "https://api.deepseek.com/v1",
+      "openai_api_key": "sk-d6dfa44b904b4d46a011ef7bea9604b5"
+    },
+    {
       "name": "claude-3.7-sonnet",
       "basemodel": "claude-3-5-sonnet-20241022",
       "signature": "claude-3.7-sonnet-5min",
