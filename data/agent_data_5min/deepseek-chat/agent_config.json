@@ -1,13 +1,13 @@
 {
   "signature": "deepseek-chat",
-  "basemodel": "deepseek/deepseek-chat",
+  "basemodel": "deepseek-chat",
   "stock_symbols": [
     "AAPL"
   ],
   "initial_cash": 10000.0,
   "market": "us",
   "live_mode": true,
-  "start_time": "2025-11-07T21:53:31-05:00",
+  "start_time": "2025-11-10T12:14:41-05:00",
   "display_name": "DeepSeek Chat",
   "color": "#ff006e",
   "icon": "./figs/deepseek.svg"

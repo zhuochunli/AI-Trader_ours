@@ -663,26 +663,52 @@ class DataLoader {
             }
         }
 
-        // Check if we have enough valid data
-        if (assetHistory.length === 0) {
-            if (serviceStartTime && initialCash !== null) {
+        // Ensure asset history always starts at initial cash (for fair comparison)
+        const fallbackInitial = initialCash ?? (positions[0]?.positions?.CASH ?? 10000);
+        const timestampCandidates = [];
+        if (serviceStartTime) timestampCandidates.push(serviceStartTime);
+        if (positions[0]?.date) timestampCandidates.push(positions[0].date);
+        const initialTimestamp = timestampCandidates.length > 0
+            ? timestampCandidates.reduce((earliest, ts) => {
+                  const currentValue = new Date(ts).valueOf();
+                  const earliestValue = earliest !== null ? new Date(earliest).valueOf() : Number.POSITIVE_INFINITY;
+                  return currentValue < earliestValue ? ts : earliest;
+              }, timestampCandidates[0])
+            : null;
+        if (initialTimestamp) {
+            const hasInitialEntry = assetHistory.some(entry => entry.date === initialTimestamp);
+            if (hasInitialEntry) {
+                assetHistory = assetHistory.map(entry =>
+                    entry.date === initialTimestamp
+                        ? { ...entry, value: fallbackInitial, id: `${agentName}-init`, action: null }
+                        : entry
+                );
+            } else {
                 assetHistory.push({
-                    date: serviceStartTime,
-                    value: initialCash,
+                    date: initialTimestamp,
+                    value: fallbackInitial,
                     id: `${agentName}-init`,
                     action: null,
                 });
-            } else {
-                console.error(`❌ ${agentName}: NO VALID ASSET HISTORY`);
-                return null;
             }
+        }
+
+        // Sort asset history chronologically after injecting initial entry
+        if (assetHistory.length > 1) {
+            assetHistory.sort((a, b) => a.date.localeCompare(b.date));
+        }
+
+        // Check if we have enough valid data
+        if (assetHistory.length === 0) {
+            console.error(`❌ ${agentName}: NO VALID ASSET HISTORY`);
+            return null;
         }
 
         const result = {
             name: agentName,
             positions: positions,
             assetHistory: assetHistory,
-            initialValue: assetHistory[0]?.value || 10000,
+            initialValue: assetHistory[0]?.value ?? initialCash ?? 10000,
             currentValue: assetHistory[assetHistory.length - 1]?.value || 0,
             return: assetHistory.length > 0 ?
                 ((assetHistory[assetHistory.length - 1].value - assetHistory[0].value) / assetHistory[0].value * 100) : 0,
@@ -912,12 +938,23 @@ class DataLoader {
 
         const trades = data.positions
             .filter(p => p.this_action && p.this_action.action !== 'no_trade')
-            .map(p => ({
-                date: p.date,
-                action: p.this_action.action,
-                symbol: p.this_action.symbol,
-                amount: p.this_action.amount
-            }))
+            .map(p => {
+                const rawAmount = p.this_action.amount;
+                let amount = 0;
+                if (typeof rawAmount === 'number') {
+                    amount = rawAmount;
+                } else if (typeof rawAmount === 'string') {
+                    const parsed = parseFloat(rawAmount);
+                    amount = Number.isFinite(parsed) ? parsed : 0;
+                }
+                return {
+                    date: p.date,
+                    action: p.this_action.action,
+                    symbol: p.this_action.symbol,
+                    amount
+                };
+            })
+            .filter(t => t.amount && t.amount !== 0)
             .reverse(); // Most recent first
 
         console.log(`[getTradeHistory] Actual trades (excluding no_trade): ${trades.length}`);

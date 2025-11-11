@@ -31,6 +31,7 @@ class BarCacheManager:
         self.api_key = os.getenv("ALPACA_API_KEY")
         self.api_secret = os.getenv("ALPACA_API_SECRET")
         self.base_url = "https://data.alpaca.markets/v2"
+        self._alpaca_calendar = self._load_alpaca_calendar()
     
     def _get_symbol_dir(self, symbol: str) -> Path:
         """Get the directory for a symbol"""
@@ -41,6 +42,56 @@ class BarCacheManager:
         symbol_dir = self._get_symbol_dir(symbol)
         symbol_dir.mkdir(parents=True, exist_ok=True)
         return symbol_dir / f"{date}.json"
+    
+    def _load_alpaca_calendar(self) -> Optional[List[Dict[str, Any]]]:
+        """Load trading calendar from Alpaca to handle market holidays."""
+        try:
+            if not self.api_key or not self.api_secret:
+                return None
+            url = f"{self.base_url}/calendar"
+            params = {
+                "start": (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"),
+                "end": (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d"),
+            }
+            response = requests.get(
+                url,
+                headers={
+                    "APCA-API-KEY-ID": self.api_key,
+                    "APCA-API-SECRET-KEY": self.api_secret,
+                },
+                params=params,
+                timeout=10,
+            )
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+        return None
+    
+    def _get_previous_trading_day(self, reference: Optional[datetime] = None) -> datetime:
+        """
+        Get the previous trading day using Alpaca calendar if available, otherwise skipping weekends only.
+        """
+        if reference is None:
+            reference = datetime.now()
+        
+        if self._alpaca_calendar:
+            # calendar entries are ordered by date ascending
+            ref_date_str = reference.strftime("%Y-%m-%d")
+            prev_date = None
+            for entry in self._alpaca_calendar:
+                if entry.get("date") and entry["date"] < ref_date_str and entry.get("open") and entry.get("close"):
+                    prev_date = entry["date"]
+            if prev_date:
+                return datetime.strptime(prev_date, "%Y-%m-%d")
+        
+        prev_day = reference - timedelta(days=1)
+        while prev_day.weekday() >= 5:  # 5=Saturday, 6=Sunday
+            prev_day -= timedelta(days=1)
+        return prev_day
     
     def _load_day_cache(self, symbol: str, date: str) -> Optional[List[Dict[str, Any]]]:
         """Load cached data for a specific symbol and date"""
@@ -282,7 +333,7 @@ class BarCacheManager:
         Returns:
             List of bar data for yesterday
         """
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        yesterday = self._get_previous_trading_day().strftime("%Y-%m-%d")
         return self.get_day_bars(symbol, yesterday)
     
     def get_recent_days_bars(
@@ -301,11 +352,13 @@ class BarCacheManager:
             Dictionary mapping date to list of bars
         """
         result = {}
+        current_date = datetime.now()
         for i in range(days):
-            date = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            bars = self.get_day_bars(symbol, date)
+            date_str = current_date.strftime("%Y-%m-%d")
+            bars = self.get_day_bars(symbol, date_str)
             if bars:
-                result[date] = bars
+                result[date_str] = bars
+            current_date = self._get_previous_trading_day(current_date)
         
         return result
     

@@ -499,6 +499,7 @@ class BaseAgent_5Min(BaseAgent):
         
         interval_count = 0
         
+        last_closed_log = None
         try:
             while True:
                 # ALWAYS use ET (Eastern Time) for stock operations
@@ -514,10 +515,14 @@ class BaseAgent_5Min(BaseAgent):
                 if not self.is_market_open():
                     # Display in readable format for console
                     readable_time = current_time_et.strftime("%Y-%m-%d %H:%M:%S")
-                    print(f"⏸️  Market closed at {readable_time} ET. Waiting...")
+                    if last_closed_log is None or (current_time_et - last_closed_log).total_seconds() >= 3600:
+                        print(f"⏸️  Market closed at {readable_time} ET. Waiting...")
+                        last_closed_log = current_time_et
                     # Check again in 5 minutes
                     await asyncio.sleep(300)
                     continue
+                else:
+                    last_closed_log = None
                 
                 interval_count += 1
                 # Display in readable format for console

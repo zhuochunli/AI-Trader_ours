@@ -25,7 +25,7 @@
     },
     {
       "name": "deepseek-chat",
-      "basemodel": "deepseek/deepseek-chat",
+      "basemodel": "deepseek-chat",
       "signature": "deepseek-chat",
       "enabled": true,
       "openai_base_url": "https://api.deepseek.com/v1",

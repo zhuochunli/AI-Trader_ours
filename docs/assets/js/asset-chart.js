@@ -7,6 +7,7 @@ let chartInstance = null;
 let allAgentsData = {};
 let isLogScale = false;
 let isLoading = false; // Flag to prevent multiple simultaneous loads
+let marketStatusTimer = null;
 
 // Color palette for different agents
 const agentColors = [
@@ -118,6 +119,7 @@ async function loadDataAndRefresh() {
         // Create leaderboard and action flow
         await createLeaderboard();
         await createActionFlow();
+        refreshMarketStatusBadge();
 
     } catch (error) {
         console.error('Error loading data:', error);
@@ -142,6 +144,7 @@ async function loadDataAndRefresh() {
     } finally {
         hideLoading();
         enableMarketButtons();
+        refreshMarketStatusBadge();
         isLoading = false;
     }
 }
@@ -150,6 +153,95 @@ async function loadDataAndRefresh() {
 window.loadAllData = async function() {
     await loadDataAndRefresh();
 };
+
+function getUSMarketStatus() {
+    const now = new Date();
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric',
+        hour12: false
+    });
+    const parts = formatter.formatToParts(now);
+    const findValue = type => parts.find(p => p.type === type)?.value;
+    const hour = Number(findValue('hour') ?? 0);
+    const minute = Number(findValue('minute') ?? 0);
+    const weekdayLabel = findValue('weekday') ?? 'Sun';
+    const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    const weekday = weekdayMap[weekdayLabel] ?? 0;
+    const minutesSinceMidnight = hour * 60 + minute;
+    const openMinutes = 9 * 60 + 30;
+    const closeMinutes = 16 * 60;
+    const isWeekday = weekday >= 1 && weekday <= 5;
+    const isOpen = isWeekday && minutesSinceMidnight >= openMinutes && minutesSinceMidnight < closeMinutes;
+
+    const statusText = isOpen ? 'Market Open' : 'Market Closed';
+    let detailText;
+
+    if (isOpen) {
+        detailText = 'Closes at 04:00 PM ET';
+    } else if (isWeekday && minutesSinceMidnight < openMinutes) {
+        detailText = 'Opens today at 09:30 ET';
+    } else {
+        let daysToAdd;
+        if (isWeekday && minutesSinceMidnight >= closeMinutes) {
+            daysToAdd = weekday === 5 ? 3 : 1;
+        } else if (weekday === 6) { // Saturday
+            daysToAdd = 2;
+        } else { // Sunday
+            daysToAdd = 1;
+        }
+        const nextDate = new Date(now);
+        nextDate.setDate(nextDate.getDate() + daysToAdd);
+        const nextFormatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            weekday: 'short',
+            month: 'short',
+            day: 'numeric'
+        });
+        detailText = `Opens ${nextFormatter.format(nextDate)} at 09:30 ET`;
+    }
+
+    return { isOpen, statusText, detailText };
+}
+
+function updateMarketStatusIndicator() {
+    const badge = document.getElementById('marketStatusBadge');
+    if (!badge || dataLoader.getMarket() !== 'us_5min') {
+        return;
+    }
+    const textEl = badge.querySelector('.market-status-text');
+    if (!textEl) {
+        return;
+    }
+    const status = getUSMarketStatus();
+    badge.classList.remove('open', 'closed');
+    badge.classList.add(status.isOpen ? 'open' : 'closed');
+    textEl.textContent = status.detailText ? `${status.statusText} | ${status.detailText}` : status.statusText;
+}
+
+function refreshMarketStatusBadge() {
+    const badge = document.getElementById('marketStatusBadge');
+    if (!badge) {
+        return;
+    }
+    if (dataLoader.getMarket() === 'us_5min') {
+        badge.style.display = 'inline-flex';
+        updateMarketStatusIndicator();
+        if (marketStatusTimer === null) {
+            marketStatusTimer = setInterval(updateMarketStatusIndicator, 60000);
+        }
+    } else {
+        badge.style.display = 'none';
+        if (marketStatusTimer !== null) {
+            clearInterval(marketStatusTimer);
+            marketStatusTimer = null;
+        }
+    }
+}
 
 // Initialize the page
 async function init() {

@@ -52,13 +52,21 @@ class TransactionLoader {
                 .filter(line => line.trim())
                 .map(line => {
                     const data = JSON.parse(line);
+                    const rawAmount = data.this_action?.amount;
+                    let amount = 0;
+                    if (typeof rawAmount === 'number') {
+                        amount = rawAmount;
+                    } else if (typeof rawAmount === 'string') {
+                        const parsed = parseFloat(rawAmount);
+                        amount = Number.isFinite(parsed) ? parsed : 0;
+                    }
                     return {
                         agentFolder: agentFolder,
                         date: data.date,
                         id: data.id,
                         action: data.this_action?.action || 'initial',
                         symbol: data.this_action?.symbol || '',
-                        amount: data.this_action?.amount || 0,
+                        amount,
                         positions: data.positions,
                         cash: data.CASH || 0
                     };
@@ -195,8 +203,8 @@ class TransactionLoader {
         return new Intl.NumberFormat('en-US', {
             style: 'currency',
             currency: 'USD',
-            minimumFractionDigits: 0,
-            maximumFractionDigits: 0
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
         }).format(value);
     }
 
