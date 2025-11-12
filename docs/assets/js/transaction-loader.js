@@ -180,6 +180,30 @@ class TransactionLoader {
             });
         }
 
+        const buyHoldSeries = window.dataLoader ? window.dataLoader.getBuyHoldSeries() : [];
+        if (buyHoldSeries.length > 0) {
+            const baselineInitial = buyHoldSeries[0].value;
+            const baselineFinal = buyHoldSeries[buyHoldSeries.length - 1].value;
+            const baselineGain = baselineFinal - baselineInitial;
+            const baselineGainPercent = baselineInitial !== 0
+                ? (baselineGain / baselineInitial) * 100
+                : 0;
+            const baselineColor = window.dataLoader.getAgentBrandColor('QQQ Invesco') || '#ff6b00';
+
+            leaderboard.push({
+                agentName: 'buy-and-hold',
+                displayName: 'Buy-and-Hold',
+                icon: window.dataLoader.getAgentIcon('buy-and-hold'),
+                color: baselineColor,
+                initialValue: baselineInitial,
+                currentValue: baselineFinal,
+                gain: baselineGain,
+                gainPercent: baselineGainPercent,
+                return: baselineGainPercent,
+                isBaseline: true
+            });
+        }
+
         // Sort by current value (descending)
         leaderboard.sort((a, b) => b.currentValue - a.currentValue);
 
@@ -221,9 +245,11 @@ class TransactionLoader {
         return date.toLocaleString('en-US', {
             month: 'short',
             day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
+            hour: 'numeric',
+            minute: '2-digit',
+            hour12: true,
+            timeZoneName: 'short'
+        }).replace('GMT', '').trim();
     }
 
     // Get action icon

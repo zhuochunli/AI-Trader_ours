@@ -30,26 +30,28 @@ intraday_agent_system_prompt = """
 You are analyzing 5-minute stock price data for a simulated trading exercise.
 
 Task:
-- Analyze the provided 5-minute price bars
-- Identify patterns in price action, volume, and momentum
-- Use the available analysis tools to evaluate trading scenarios
-- Determine optimal position adjustments based on technical analysis
+- You are an AI day trader focusing on NASDAQ stocks.
+- Step 1: Analyze current 5-min and 15-min trends.
+- Step 2: Analyze the following data (Open, High, Low, Close, Volume) and describe current market structure (trend, consolidation, breakout). Identify potential breakout or mean-reversion setups using price action, volume pattern.
+- Step 3: Suggest one trade with entry/stop/take-profit.
+- Step 4: Explain your rationale briefly.
 
-Analysis approach:
-1. Review yesterday's positions and closing prices
-2. Examine today's 5-minute bars for trends and patterns
-3. Compare current bars with yesterday's bars for context
-4. Consider current portfolio positions and available capital
-5. Evaluate potential buy, sell, or hold scenarios
+For each trade, always define:
+- Direction (long or short)
+- Entry price
+- Stop loss price
+- Take profit price
+- Rationale (1-2 sentences)
 
 Guidelines:
 - This is a simulated portfolio analysis exercise
-- Call the provided tools to perform analysis and position updates
-- Focus on technical indicators: momentum, volume, support/resistance
+- Stick with the stop loss and take profit prices after each entry.
+- If volatility is extreme or liquidity is low, suggest staying flat.
 - Consider transaction costs in your analysis
 - If data is incomplete, output {STOP_SIGNAL} to continue later
+- Close all positions before the end of each trading day.
 
-Here is the information you need:
+Here is the information provided:
 
 You are trading {symbol}
 
@@ -68,11 +70,11 @@ Current positions (numbers after stock code represent how many shares you hold, 
 Current price of {symbol}:
 ${current_price}
 
-Today's 5-minute bars (from market open until now):
-{today_bars}
-
-Yesterday's 5-minute bars (full trading day):
+Yesterday's 5-minute bars (full trading day). Identify patterns in price action, volume:
 {yesterday_bars}
+
+Today's 5-minute bars (from market open until now). Identify patterns in price action, volume:
+{today_bars}
 
 When you think your task is complete, output
 {STOP_SIGNAL}
@@ -203,12 +205,35 @@ def get_intraday_agent_system_prompt_with_bars(
         yesterday_positions = {"CASH": 10000.0}
     
     # Format bar data
-    today_bars_text = format_5min_bars(today_bars, max_bars=50) if today_bars else "No bars available yet (market just opened or data pending)"
-    yesterday_bars_text = format_5min_bars(yesterday_bars, max_bars=50) if yesterday_bars else "No historical bars available"
+    def translate_bar_keys(bars: List[Dict]) -> List[Dict]:
+        key_map = {
+            "c": "close_price",
+            "h": "high_price",
+            "l": "low_price",
+            "n": "number_of_trades",
+            "o": "open_price",
+            "t": "timestamp",
+            "v": "volume",
+            "vw": "volume_weighted_average_price",
+        }
+        translated = []
+        for bar in bars:
+            translated_bar = {}
+            for key, value in bar.items():
+                new_key = key_map.get(key, key)
+                translated_bar[new_key] = value
+            translated.append(translated_bar)
+        return translated
+
+    today_bars_translated = translate_bar_keys(today_bars) if today_bars else None
+    yesterday_bars_translated = translate_bar_keys(yesterday_bars) if yesterday_bars else None
+
+    today_bars_text = format_5min_bars(today_bars_translated, max_bars=50) if today_bars_translated else "No bars available yet (market just opened or data pending)"
+    yesterday_bars_text = format_5min_bars(yesterday_bars_translated, max_bars=50) if yesterday_bars_translated else "No historical bars available"
     
     # Extract prices from bars
-    yesterday_close_price = yesterday_bars[-1].get("close", "Unknown") if yesterday_bars else "Data not available"
-    current_price = today_bars[-1].get("close", "Unknown") if today_bars else "Data not available"
+    yesterday_close_price = yesterday_bars_translated[-1].get("close_price", "Unknown") if yesterday_bars_translated else "Data not available"
+    current_price = today_bars_translated[-1].get("close_price", "Unknown") if today_bars_translated else "Data not available"
     
     return intraday_agent_system_prompt.format(
         symbol=symbol,

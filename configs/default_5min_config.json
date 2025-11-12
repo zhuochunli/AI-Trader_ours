@@ -95,7 +95,7 @@
     }
   ],
   "stock_symbols": [
-    "AAPL"
+    "QQQ"
   ],
   "description": "5-minute intraday trading configuration. Runs trading decisions every 5 minutes during market hours. Uses Alpaca API for real-time bar data."
 }

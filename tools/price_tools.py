@@ -894,13 +894,31 @@ def format_5min_bars(bars: List[Dict[str, any]], max_bars: int = 50) -> str:
     # Limit number of bars to avoid overwhelming the prompt
     display_bars = bars[-max_bars:] if len(bars) > max_bars else bars
     
+    def fmt_price(value):
+        try:
+            return f"${float(value):8.2f}"
+        except (TypeError, ValueError):
+            return "   N/A  "
+
+    def fmt_volume(value):
+        try:
+            return f"{int(float(value)):>12,}"
+        except (TypeError, ValueError):
+            return "     N/A"
+
+    def fmt_count(value):
+        try:
+            return f"{int(float(value)):>8}"
+        except (TypeError, ValueError):
+            return "    N/A"
+
     lines = []
-    lines.append("Time          | Open    | High    | Low     | Close   | Volume")
-    lines.append("-" * 70)
+    lines.append("Timestamp     | Open Price | High Price | Low Price | Close Price |     Volume | Number of Trades | Volume-weighted Avg Price")
+    lines.append("-" * 128)
     
     for bar in display_bars:
         # Parse timestamp - handle both ISO format and readable format
-        timestamp = bar.get("timestamp", "")
+        timestamp = bar.get("timestamp", "") or bar.get("t", "")
         if "T" in timestamp:
             # Convert ISO format to readable
             try:
@@ -911,13 +929,18 @@ def format_5min_bars(bars: List[Dict[str, any]], max_bars: int = 50) -> str:
         else:
             time_str = timestamp
         
-        open_price = bar.get("open", 0)
-        high_price = bar.get("high", 0)
-        low_price = bar.get("low", 0)
-        close_price = bar.get("close", 0)
-        volume = bar.get("volume", 0)
-        
-        lines.append(f"{time_str:13} | ${open_price:6.2f} | ${high_price:6.2f} | ${low_price:6.2f} | ${close_price:6.2f} | {volume:,}")
+        open_price = bar.get("open_price", bar.get("open", bar.get("o", None)))
+        high_price = bar.get("high_price", bar.get("high", bar.get("h", None)))
+        low_price = bar.get("low_price", bar.get("low", bar.get("l", None)))
+        close_price = bar.get("close_price", bar.get("close", bar.get("c", None)))
+        volume = bar.get("volume", bar.get("v", None))
+        num_trades = bar.get("number_of_trades", bar.get("n", None))
+        vwap = bar.get("volume_weighted_average_price", bar.get("vw", None))
+
+        lines.append(
+            f"{time_str:13} | {fmt_price(open_price)} | {fmt_price(high_price)} | {fmt_price(low_price)} | "
+            f"{fmt_price(close_price)} | {fmt_volume(volume)} | {fmt_count(num_trades)} | {fmt_price(vwap)}"
+        )
     
     return "\n".join(lines)
 

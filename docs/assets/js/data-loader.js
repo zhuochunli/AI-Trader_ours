@@ -11,6 +11,7 @@ class DataLoader {
         // Load market from localStorage or default to 'us_5min'
         this.currentMarket = this.loadMarketFromStorage() || 'us_5min';
         this.liveAgentMetadata = {};
+        this.buyHoldSeries = null;
     }
 
     // Save market selection to localStorage
@@ -167,9 +168,8 @@ class DataLoader {
                 return true;
             });
 
-            const positions = tradingPositions.length > 0 ? tradingPositions : parsedPositions;
-
-            console.log(`Loaded ${positions.length} positions for ${agentName} (${tradingPositions.length} trade records, ${positions.length - tradingPositions.length} init entries)`);
+            const positions = parsedPositions;
+            console.log(`Loaded ${positions.length} positions for ${agentName} (${tradingPositions.length} trade records, ${positions.length - tradingPositions.length} non-trade entries)`);
             return positions;
         } catch (error) {
             console.error(`Error loading positions for ${agentName}:`, error);
@@ -710,8 +710,9 @@ class DataLoader {
             assetHistory: assetHistory,
             initialValue: assetHistory[0]?.value ?? initialCash ?? 10000,
             currentValue: assetHistory[assetHistory.length - 1]?.value || 0,
-            return: assetHistory.length > 0 ?
-                ((assetHistory[assetHistory.length - 1].value - assetHistory[0].value) / assetHistory[0].value * 100) : 0,
+            return: assetHistory.length > 0
+                ? ((assetHistory[assetHistory.length - 1].value - assetHistory[0].value) / assetHistory[0].value * 100)
+                : 0,
             startTime: serviceStartTime,
             initialCash: initialCash,
         };
@@ -911,6 +912,8 @@ class DataLoader {
             console.log(`Successfully added ${benchmarkData.name} to allData`);
         }
 
+        await this.computeBuyHoldBaseline(allData);
+
         return allData;
     }
 
@@ -921,6 +924,92 @@ class DataLoader {
 
         const latestPosition = data.positions[data.positions.length - 1];
         return latestPosition && latestPosition.positions ? latestPosition.positions : null;
+    }
+
+    async computeBuyHoldBaseline(allData) {
+        try {
+            if (this.getMarket() !== 'us_5min') {
+                this.buyHoldSeries = null;
+                return;
+            }
+
+            const entries = Object.entries(allData).filter(([name, data]) => {
+                if (!data || !data.assetHistory || data.assetHistory.length === 0) {
+                    return false;
+                }
+                const lower = name.toLowerCase();
+                return !lower.includes('qqq') && !lower.includes('sse');
+            });
+
+            if (entries.length === 0) {
+                this.buyHoldSeries = null;
+                return;
+            }
+
+            const [referenceName, referenceData] = entries[0];
+            const candidatePositions = referenceData.positions || [];
+            let primarySymbol = null;
+
+            for (const entry of candidatePositions) {
+                if (entry && entry.positions) {
+                    const symbols = Object.keys(entry.positions).filter(key => key !== 'CASH');
+                    if (symbols.length > 0) {
+                        primarySymbol = symbols[0];
+                        break;
+                    }
+                }
+            }
+
+            if (!primarySymbol) {
+                console.warn('Buy-and-hold baseline: no tradable symbol detected.');
+                this.buyHoldSeries = null;
+                return;
+            }
+
+            const initialValue = referenceData.initialValue ?? (referenceData.assetHistory[0]?.value ?? 10000);
+            const firstDate = referenceData.assetHistory[0]?.date;
+            if (!firstDate) {
+                this.buyHoldSeries = null;
+                return;
+            }
+
+            const initialPrice = await this.getClosingPrice(primarySymbol, firstDate);
+            if (!initialPrice || !Number.isFinite(initialPrice) || initialPrice <= 0) {
+                console.warn('Buy-and-hold baseline: unable to determine initial price.');
+                this.buyHoldSeries = null;
+                return;
+            }
+
+            const sharesHeld = initialValue / initialPrice;
+            const series = [];
+
+            for (const entry of referenceData.assetHistory) {
+                const price = await this.getClosingPrice(primarySymbol, entry.date);
+                if (!price || !Number.isFinite(price) || price <= 0) {
+                    continue;
+                }
+                series.push({
+                    date: entry.date,
+                    value: sharesHeld * price
+                });
+            }
+
+            if (series.length === 0) {
+                console.warn('Buy-and-hold baseline: produced empty series.');
+                this.buyHoldSeries = null;
+                return;
+            }
+
+            this.buyHoldSeries = series;
+            console.log(`Buy-and-hold baseline computed using ${primarySymbol} with ${sharesHeld.toFixed(4)} shares.`);
+        } catch (error) {
+            console.warn('Failed to compute buy-and-hold baseline:', error);
+            this.buyHoldSeries = null;
+        }
+    }
+
+    getBuyHoldSeries() {
+        return this.buyHoldSeries || [];
     }
 
     // Get trade history for an agent
@@ -936,26 +1025,72 @@ class DataLoader {
         const allActions = data.positions.filter(p => p.this_action);
         console.log(`[getTradeHistory] Positions with this_action: ${allActions.length}`);
 
-        const trades = data.positions
-            .filter(p => p.this_action && p.this_action.action !== 'no_trade')
-            .map(p => {
-                const rawAmount = p.this_action.amount;
-                let amount = 0;
-                if (typeof rawAmount === 'number') {
-                    amount = rawAmount;
-                } else if (typeof rawAmount === 'string') {
-                    const parsed = parseFloat(rawAmount);
-                    amount = Number.isFinite(parsed) ? parsed : 0;
+        const trades = [];
+        let prevEntry = null;
+        const initialCash = data.initialCash ?? (data.positions[0]?.positions?.CASH ?? 0);
+
+        data.positions.forEach(entry => {
+            if (!entry || !entry.this_action) {
+                prevEntry = entry;
+                return;
+            }
+
+            const action = entry.this_action.action;
+            if (action === 'no_trade') {
+                prevEntry = entry;
+                return;
+            }
+
+            const rawAmount = entry.this_action.amount;
+            let amount = 0;
+            if (typeof rawAmount === 'number') {
+                amount = rawAmount;
+            } else if (typeof rawAmount === 'string') {
+                const parsed = parseFloat(rawAmount);
+                amount = Number.isFinite(parsed) ? parsed : 0;
+            }
+            if (!amount || amount === 0) {
+                prevEntry = entry;
+                return;
+            }
+
+            const symbol = entry.this_action.symbol;
+            const currentPositions = entry.positions || {};
+            const prevPositions = prevEntry?.positions || null;
+            const prevCash = prevPositions && typeof prevPositions.CASH === 'number'
+                ? prevPositions.CASH
+                : initialCash;
+            const currentCash = typeof currentPositions.CASH === 'number'
+                ? currentPositions.CASH
+                : null;
+
+            let price = undefined;
+            if (prevCash !== null && currentCash !== null) {
+                if (action === 'buy') {
+                    const spent = prevCash - currentCash;
+                    price = spent / amount;
+                } else if (action === 'sell') {
+                    const received = currentCash - prevCash;
+                    price = received / amount;
                 }
-                return {
-                    date: p.date,
-                    action: p.this_action.action,
-                    symbol: p.this_action.symbol,
-                    amount
-                };
-            })
-            .filter(t => t.amount && t.amount !== 0)
-            .reverse(); // Most recent first
+                if (!Number.isFinite(price)) {
+                    price = undefined;
+                }
+            }
+
+            trades.push({
+                date: entry.date,
+                action,
+                symbol,
+                amount,
+                positions: currentPositions,
+                price
+            });
+
+            prevEntry = entry;
+        });
+
+        trades.reverse(); // Most recent first
 
         console.log(`[getTradeHistory] Actual trades (excluding no_trade): ${trades.length}`);
         console.log(`[getTradeHistory] First 3 trades:`, trades.slice(0, 3));
@@ -1023,7 +1158,8 @@ class DataLoader {
             'claude-3.7-sonnet': './figs/claude-color.svg',
             'deepseek-chat-v3.1': './figs/deepseek.svg',
             'QQQ Invesco': './figs/stock.svg',
-            'SSE 50 Index': './figs/stock.svg'
+            'SSE 50 Index': './figs/stock.svg',
+            'buy-and-hold': './figs/buy-hold.svg'
         };
         return icons[agentName] || './figs/stock.svg';
     }

@@ -52,11 +52,24 @@ async function loadDataAndRefresh() {
         // Populate agent selector
         populateAgentSelector();
 
-        // Load first agent by default
-        const firstAgent = Object.keys(allAgentsData)[0];
-        if (firstAgent) {
-            currentAgent = firstAgent;
-            await loadAgentPortfolio(firstAgent);
+        // Determine which agent to show (persist selection across refresh)
+        const agentNames = Object.keys(allAgentsData);
+        const defaultAgent = agentNames[0];
+        const persistedAgent = (() => {
+            try {
+                return localStorage.getItem('portfolio-active-agent');
+            } catch {
+                return null;
+            }
+        })();
+        let agentToLoad = defaultAgent;
+        if (persistedAgent && agentNames.includes(persistedAgent)) {
+            agentToLoad = persistedAgent;
+        }
+
+        if (agentToLoad) {
+            currentAgent = agentToLoad;
+            await loadAgentPortfolio(agentToLoad);
         }
 
     } catch (error) {
@@ -140,6 +153,7 @@ async function init() {
     updateActiveButton(dataLoader.getMarket());
 
     // Load initial data
+    // Load initial data
     await loadDataAndRefresh();
 }
 
@@ -155,6 +169,11 @@ function populateAgentSelector() {
         option.textContent = dataLoader.getAgentDisplayName(agentName);
         select.appendChild(option);
     });
+
+    // Set the select to the current agent if available
+    if (currentAgent && select.value !== currentAgent) {
+        select.value = currentAgent;
+    }
 }
 
 // Load and display portfolio for selected agent
@@ -163,6 +182,11 @@ async function loadAgentPortfolio(agentName) {
 
     try {
         currentAgent = agentName;
+        try {
+            localStorage.setItem('portfolio-active-agent', agentName);
+        } catch {
+            // Ignore storage errors (e.g., Safari private mode)
+        }
         const data = allAgentsData[agentName];
 
         // Update performance metrics
@@ -458,8 +482,8 @@ function updateTradeHistory(agentName) {
         return;
     }
 
-    // Show latest 20 trades
-    const recentTrades = trades.slice(0, 20);
+    // Show all trades (scrollable container handles overflow)
+    const recentTrades = trades;
 
     recentTrades.forEach(trade => {
         const tradeItem = document.createElement('div');
@@ -482,11 +506,28 @@ function updateTradeHistory(agentName) {
             });
         }
 
+        const sharesAfter = trade.positions && trade.symbol ? trade.positions[trade.symbol] ?? 0 : 0;
+        const priceInfo = Number.isFinite(trade.price) ? `$${trade.price.toFixed(2)} USD` : 'Price unavailable';
+        const cashAfter = trade.positions && typeof trade.positions.CASH === 'number'
+            ? trade.positions.CASH
+            : null;
+        const cashText = cashAfter !== null
+            ? `$${cashAfter.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : 'N/A';
+
         tradeItem.innerHTML = `
             <div class="trade-icon ${iconClass}">${icon}</div>
             <div class="trade-details">
-                <div class="trade-action">${actionText} ${trade.amount} shares of ${trade.symbol}</div>
-                <div class="trade-meta">${formattedDate}</div>
+                <div class="trade-action">${actionText} ${trade.amount} ${trade.amount === 1 ? 'share' : 'shares'} of ${trade.symbol}</div>
+                <div class="trade-meta">
+                    <span>${formattedDate}</span>
+                    <span> • </span>
+                    <span class="trade-metric"><strong>Price:</strong> ${priceInfo}</span>
+                    <span> • </span>
+                    <span class="trade-metric"><strong>Position:</strong> ${sharesAfter} ${sharesAfter === 1 ? 'share' : 'shares'}</span>
+                    <span> • </span>
+                    <span class="trade-metric"><strong>Cash:</strong> ${cashText}</span>
+                </div>
             </div>
         `;
 

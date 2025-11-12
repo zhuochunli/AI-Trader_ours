@@ -547,7 +547,20 @@ class BaseAgent_5Min(BaseAgent):
                 
                 # Wait 5 minutes (300 seconds)
                 print(f"⏳ Waiting 5 minutes until next interval...")
-                await asyncio.sleep(300)
+                # Align to next 5-minute boundary
+                next_tick = (
+                    current_time_et.replace(second=0, microsecond=0)
+                    + timedelta(minutes=5)
+                )
+                now = datetime.now(et_tz)
+                if now >= next_tick:
+                    # If we're already past the boundary (due to delays), move to future slot
+                    minutes_ahead = ((now.minute // 5) + 1) * 5
+                    next_tick = now.replace(second=0, microsecond=0, minute=0) + timedelta(minutes=minutes_ahead)
+                sleep_seconds = (next_tick - now).total_seconds()
+                if sleep_seconds < 0:
+                    sleep_seconds = 0
+                await asyncio.sleep(sleep_seconds)
                 
         except KeyboardInterrupt:
             print(f"\n\n🛑 Received stop signal")

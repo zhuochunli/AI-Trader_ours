@@ -98,6 +98,16 @@ async function loadDataAndRefresh() {
             });
         });
         await Promise.all(iconPromises);
+
+        const buyHoldSeries = dataLoader.getBuyHoldSeries();
+        if (buyHoldSeries.length > 0) {
+            const baselineIconPath = dataLoader.getAgentIcon('buy-and-hold');
+            try {
+                await loadIconImage(baselineIconPath);
+            } catch (err) {
+                console.warn('Failed to load Buy-and-Hold icon:', err);
+            }
+        }
         console.log('Icons preloaded');
 
         // Destroy existing chart if it exists
@@ -371,11 +381,16 @@ function updateStats() {
 function createChart() {
     const ctx = document.getElementById('assetChart').getContext('2d');
 
-    // Collect all unique timestamps and sort them chronologically
+    // Collect all unique timestamps (include baseline) and sort them chronologically
     const allDates = new Set();
+    const buyHoldSeries = dataLoader.getBuyHoldSeries();
+
     Object.keys(allAgentsData).forEach(agentName => {
-        allAgentsData[agentName].assetHistory.forEach(h => allDates.add(h.date));
+        const agent = allAgentsData[agentName];
+        agent.assetHistory.forEach(h => allDates.add(h.date));
     });
+
+    buyHoldSeries.forEach(entry => allDates.add(entry.date));
     let sortedDates = Array.from(allDates).sort();
 
     const parseDate = (dateStr) => {
@@ -408,7 +423,9 @@ function createChart() {
     // Chart data summary
     console.log(`📊 Chart: ${sortedDates.length} time points from ${sortedDates[0]} to ${sortedDates[sortedDates.length - 1]}`);
 
-    const datasets = Object.keys(allAgentsData).map((agentName, index) => {
+    const datasets = [];
+
+    Object.keys(allAgentsData).forEach((agentName, index) => {
         const data = allAgentsData[agentName];
         let color, borderWidth, borderDash;
 
@@ -486,8 +503,45 @@ function createChart() {
 
         console.log(`[DATASET OBJECT ${index}] borderColor: ${datasetObj.borderColor}, pointHoverBackgroundColor: ${datasetObj.pointHoverBackgroundColor}`);
 
-        return datasetObj;
+        datasets.push(datasetObj);
     });
+
+    if (buyHoldSeries.length > 0) {
+        const buyHoldColor = dataLoader.getAgentBrandColor('QQQ Invesco') || '#ff6b00';
+        let lastKnownValue = null;
+        const buyHoldData = sortedDates.map(date => {
+            const entry = buyHoldSeries.find(h => h.date === date);
+            if (entry) {
+                lastKnownValue = entry.value;
+                return { x: date, y: entry.value };
+            }
+            if (market === 'us_5min' && lastKnownValue !== null) {
+                return { x: date, y: lastKnownValue };
+            }
+            return { x: date, y: null };
+        });
+
+        datasets.push({
+            label: 'Buy-and-Hold',
+            data: buyHoldData,
+            borderColor: buyHoldColor,
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            tension: 0.2,
+            pointRadius: 0,
+            pointHoverRadius: 7,
+            pointHoverBackgroundColor: buyHoldColor,
+            pointHoverBorderColor: '#fff',
+            pointHoverBorderWidth: 2,
+            fill: false,
+            spanGaps: true,
+            cubicInterpolationMode: 'monotone',
+            isBaseline: true,
+            agentName: 'buy-and-hold',
+            agentIcon: dataLoader.getAgentIcon('buy-and-hold')
+        });
+    }
 
     // Create gradient for area fills
     function createGradient(ctx, color) {
@@ -509,20 +563,21 @@ function createChart() {
             chart.data.datasets.forEach((dataset, datasetIndex) => {
                 const meta = chart.getDatasetMeta(datasetIndex);
                 if (!meta.hidden && dataset.data.length > 0) {
-                    // Get the last point
                     const lastPoint = meta.data[meta.data.length - 1];
+                    if (!lastPoint) {
+                        return;
+                    }
 
-                    if (lastPoint) {
-                        const x = lastPoint.x;
-                        const y = lastPoint.y;
+                    const x = lastPoint.x;
+                    const y = lastPoint.y;
 
-                        ctx.save();
+                    ctx.save();
 
-                        // Calculate pulse animation values
-                        const pulseSpeed = 1500; // milliseconds per cycle
-                        const phase = ((now + datasetIndex * 300) % pulseSpeed) / pulseSpeed; // Offset each line
-                        const pulse = Math.sin(phase * Math.PI * 2) * 0.5 + 0.5; // 0 to 1
+                    const pulseSpeed = 1500; // milliseconds per cycle
+                    const phase = ((now + datasetIndex * 300) % pulseSpeed) / pulseSpeed; // Offset each line
+                    const pulse = Math.sin(phase * Math.PI * 2) * 0.5 + 0.5; // 0 to 1
 
+                    if (!dataset.isBaseline) {
                         // Draw animated ripple rings (outer glow effect)
                         for (let i = 0; i < 3; i++) {
                             const ripplePhase = ((now + datasetIndex * 300 + i * 500) % 2000) / 2000;
@@ -556,34 +611,58 @@ function createChart() {
                         ctx.beginPath();
                         ctx.arc(x, y, pointSize * 0.5, 0, Math.PI * 2);
                         ctx.fill();
-
-                        // Reset shadow
-                        ctx.shadowBlur = 0;
-
-                        // Draw icon image with glow background (positioned to the right)
-                        const iconSize = 30;
-                        const iconX = x + 22;
-
-                        // Icon background circle with glow
-                        ctx.shadowColor = dataset.borderColor;
-                        ctx.shadowBlur = 15;
+                    } else {
+                        // Static marker for baseline
+                        ctx.globalAlpha = 0.75;
                         ctx.fillStyle = dataset.borderColor;
+                        ctx.shadowColor = dataset.borderColor;
+                        ctx.shadowBlur = 6;
                         ctx.beginPath();
-                        ctx.arc(iconX, y, iconSize / 2, 0, Math.PI * 2);
+                        ctx.arc(x, y, 5, 0, Math.PI * 2);
                         ctx.fill();
 
-                        // Reset shadow for icon
+                        ctx.globalAlpha = 1;
                         ctx.shadowBlur = 0;
-
-                        // Draw icon image if loaded
-                        if (iconImageCache[dataset.agentIcon]) {
-                            const img = iconImageCache[dataset.agentIcon];
-                            const imgSize = iconSize * 0.6; // Icon slightly smaller than circle
-                            ctx.drawImage(img, iconX - imgSize/2, y - imgSize/2, imgSize, imgSize);
-                        }
-
-                        ctx.restore();
+                        ctx.fillStyle = '#ffffff';
+                        ctx.beginPath();
+                        ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+                        ctx.fill();
                     }
+
+                    // Reset shadow for icon drawing
+                    ctx.shadowBlur = 0;
+
+                    // Draw icon image with glow background (positioned to the right)
+                    const iconSize = 30;
+                    const iconX = x + 22;
+
+                    // Icon background circle with glow
+                    ctx.shadowColor = dataset.borderColor;
+                    ctx.shadowBlur = dataset.isBaseline ? 10 : 15;
+                    ctx.fillStyle = dataset.borderColor;
+                    ctx.beginPath();
+                    ctx.arc(iconX, y, iconSize / 2, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    // Reset shadow for icon
+                    ctx.shadowBlur = 0;
+
+                    // Draw icon image if loaded
+                    if (dataset.agentIcon && iconImageCache[dataset.agentIcon]) {
+                        const img = iconImageCache[dataset.agentIcon];
+                        const imgSize = iconSize * 0.6; // Icon slightly smaller than circle
+                        ctx.drawImage(img, iconX - imgSize/2, y - imgSize/2, imgSize, imgSize);
+                    } else {
+                        // Text fallback
+                        ctx.fillStyle = '#ffffff';
+                        ctx.font = 'bold 12px "Inter", sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        const fallbackText = dataset.isBaseline ? 'BH' : 'AI';
+                        ctx.fillText(fallbackText, iconX, y);
+                    }
+
+                    ctx.restore();
                 }
             });
 
@@ -899,6 +978,24 @@ function createLegend() {
 
         legendContainer.appendChild(legendItem);
     });
+
+    const buyHoldSeries = dataLoader.getBuyHoldSeries();
+    if (buyHoldSeries.length > 0) {
+        const buyHoldColor = dataLoader.getAgentBrandColor('QQQ Invesco') || '#ff6b00';
+        const legendItem = document.createElement('div');
+        legendItem.className = 'legend-item';
+        legendItem.innerHTML = `
+            <div class="legend-icon" style="background: ${buyHoldColor}1A;">
+                <img src="${dataLoader.getAgentIcon('buy-and-hold')}" alt="Buy-and-Hold" class="legend-icon-img" />
+            </div>
+            <div class="legend-color" style="background: ${buyHoldColor}; border-style: dashed;"></div>
+            <div class="legend-info">
+                <div class="legend-name">Buy-and-Hold</div>
+                <div class="legend-return neutral">Baseline</div>
+            </div>
+        `;
+        legendContainer.appendChild(legendItem);
+    }
 }
 
 // Toggle between linear and log scale
@@ -919,15 +1016,22 @@ function toggleScale() {
 function exportData() {
     let csv = 'Date,';
 
-    // Header row with agent names
     const agentNames = Object.keys(allAgentsData);
-    csv += agentNames.map(name => dataLoader.getAgentDisplayName(name)).join(',') + '\n';
+    const buyHoldSeries = dataLoader.getBuyHoldSeries();
+    let header = agentNames.map(name => dataLoader.getAgentDisplayName(name));
+    if (buyHoldSeries.length > 0) {
+        header.push('Buy-and-Hold');
+    }
+    csv += header.join(',') + '\n';
 
     // Collect all unique dates
     const allDates = new Set();
     agentNames.forEach(name => {
         allAgentsData[name].assetHistory.forEach(h => allDates.add(h.date));
     });
+    if (buyHoldSeries.length > 0) {
+        buyHoldSeries.forEach(h => allDates.add(h.date));
+    }
 
     // Sort dates
     const sortedDates = Array.from(allDates).sort();
@@ -940,6 +1044,10 @@ function exportData() {
             const entry = history.find(h => h.date === date);
             row.push(entry ? entry.value.toFixed(2) : '');
         });
+        if (buyHoldSeries.length > 0) {
+            const entry = buyHoldSeries.find(h => h.date === date);
+            row.push(entry ? entry.value.toFixed(2) : '');
+        }
         csv += row.join(',') + '\n';
     });
 
@@ -1060,13 +1168,19 @@ async function createLeaderboard() {
         const rankClass = index === 0 ? 'first' : index === 1 ? 'second' : index === 2 ? 'third' : '';
         const gainClass = item.gain >= 0 ? 'positive' : 'negative';
 
+        const iconBg = item.color ? `${item.color}1A` : 'rgba(0, 212, 255, 0.1)';
+        const baselineColor = item.color || '#ff6b00';
+        const iconContent = item.icon
+            ? `<img src="${item.icon}" alt="${item.displayName}">`
+            : `<span class="leaderboard-baseline-badge" style="color: ${baselineColor}; border-color: ${baselineColor}80;">BH</span>`;
+
         const itemEl = document.createElement('div');
         itemEl.className = 'leaderboard-item';
         itemEl.style.animationDelay = `${index * 0.05}s`;
         itemEl.innerHTML = `
             <div class="leaderboard-rank ${rankClass}">#${item.rank}</div>
-            <div class="leaderboard-icon">
-                <img src="${item.icon}" alt="${item.displayName}">
+            <div class="leaderboard-icon" style="background: ${iconBg};">
+                ${iconContent}
             </div>
             <div class="leaderboard-info">
                 <div class="leaderboard-name">${item.displayName}</div>
