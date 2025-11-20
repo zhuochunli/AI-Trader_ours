@@ -1,7 +1,13 @@
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Dict, Iterator, Union
+
+try:
+    import fcntl  # type: ignore
+except ImportError:  # pragma: no cover
+    fcntl = None  # Windows fallback – locking will be best-effort only
 
 from dotenv import load_dotenv
 
@@ -32,19 +38,52 @@ def _resolve_runtime_env_path() -> str:
     return path
 
 
+@contextmanager
+def _locked_file(path: str, mode: str) -> Iterator:
+    """
+    Open a file with an advisory lock (POSIX). Falls back silently if fcntl is unavailable.
+    """
+    file_obj = open(path, mode, encoding="utf-8")
+    locked = False
+    if fcntl is not None:
+        try:
+            lock_type = fcntl.LOCK_EX if "w" in mode or "+" in mode else fcntl.LOCK_SH
+            fcntl.flock(file_obj.fileno(), lock_type)
+            locked = True
+        except Exception:
+            locked = False
+    try:
+        yield file_obj
+    finally:
+        if locked and fcntl is not None:
+            try:
+                fcntl.flock(file_obj.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+        file_obj.close()
+
+
+def _safe_load_json_file(path: str) -> Dict[str, Any]:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with _locked_file(path, "r") as f:
+            try:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+            except json.JSONDecodeError:
+                return {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+
 def _load_runtime_env() -> dict:
     path = _resolve_runtime_env_path()
     if path is None:
         return {}
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    return data
-    except Exception:
-        pass
-    return {}
+    return _safe_load_json_file(path)
 
 
 def get_config_value(key: str, default=None):
@@ -60,13 +99,26 @@ def write_config_value(key: str, value: Any):
     if path is None:
         print(f"⚠️  WARNING: RUNTIME_ENV_PATH not set, config value '{key}' not persisted")
         return
-    _RUNTIME_ENV = _load_runtime_env()
-    _RUNTIME_ENV[key] = value
+    runtime_env = _safe_load_json_file(path)
+    runtime_env[key] = value
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(_RUNTIME_ENV, f, ensure_ascii=False, indent=4)
+        with _locked_file(path, "a+") as f:
+            f.seek(0)
+            f.truncate()
+            json.dump(runtime_env, f, ensure_ascii=False, indent=4)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
     except Exception as e:
         print(f"❌ Error writing config to {path}: {e}")
+    else:
+        # Mirror the value into process environment for immediate availability
+        try:
+            os.environ[str(key)] = str(value)
+        except Exception:
+            pass
 
 
 def extract_conversation(conversation: dict, output_type: str):

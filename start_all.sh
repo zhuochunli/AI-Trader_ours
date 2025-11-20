@@ -47,6 +47,40 @@ cleanup() {
 # Set up trap to catch Ctrl+C
 trap cleanup INT TERM
 
+if [ -f ".env" ]; then
+    set -a
+    source .env
+    set +a
+fi
+
+# Ensure frontend data points to live runtime data and stale caches are cleared
+echo "🧹 Preparing data directories..."
+if [ -e "docs/data" ] && [ ! -L "docs/data" ]; then
+    echo "   • Removing stale docs/data directory"
+    rm -rf docs/data
+fi
+
+if [ ! -L "docs/data" ]; then
+    ln -s ../data docs/data
+    echo "   • Created docs/data → ../data symlink"
+fi
+
+RUNTIME_DATA_DIR="./data/agent_data_5min"
+if [ -d "$RUNTIME_DATA_DIR" ]; then
+    echo "   • Clearing previous log snapshots"
+    find "$RUNTIME_DATA_DIR" -maxdepth 2 -type d \( -name "log" -o -name "logs" \) -exec rm -rf {} + 2>/dev/null
+
+    echo "   • Removing cached baseline data"
+    find "$RUNTIME_DATA_DIR" -type f -name "buy_and_hold.json" -delete 2>/dev/null
+fi
+
+# Ensure legacy data path points at live 5-min data
+if [ -e "data/agent_data" ] || [ -L "data/agent_data" ]; then
+    rm -rf data/agent_data
+fi
+ln -s agent_data_5min data/agent_data
+echo "   • Linked data/agent_data → agent_data_5min"
+
 echo "Step 1/3: Starting Frontend Dashboard..."
 echo "----------------------------------------"
 ./start_frontend.sh > /dev/null 2>&1 &

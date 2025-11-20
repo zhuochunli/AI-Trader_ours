@@ -528,6 +528,11 @@ body {
     overflow: hidden;
 }
 
+.chart-controls .btn-secondary {
+    min-width: 130px;
+    text-align: center;
+}
+
 .btn-secondary::before {
     content: '';
     position: absolute;
@@ -557,6 +562,7 @@ body {
 .btn-secondary:active {
     transform: translateY(0);
 }
+
 
 .chart-container {
     position: relative;
@@ -1295,6 +1301,134 @@ body {
 
 .gain-percent.negative {
     background: rgba(245, 101, 101, 0.15);
+}
+
+.trade-popover {
+    position: absolute;
+    min-width: 220px;
+    max-width: 260px;
+    padding: 1rem 1.1rem;
+    background: rgba(15, 23, 42, 0.96);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: 12px;
+    box-shadow: 0 20px 45px rgba(15, 23, 42, 0.45);
+    color: var(--text-primary);
+    z-index: 9999;
+    opacity: 0;
+    transform: translateY(6px);
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    backdrop-filter: blur(12px);
+}
+
+.trade-popover.hidden {
+    opacity: 0;
+    transform: translateY(6px);
+    pointer-events: none;
+}
+
+.trade-popover.active {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+.trade-popover-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+
+.trade-badge {
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    letter-spacing: 0.05em;
+}
+
+.trade-badge.buy {
+    background: rgba(72, 187, 120, 0.15);
+    color: var(--success);
+}
+
+.trade-badge.sell {
+    background: rgba(245, 101, 101, 0.15);
+    color: var(--danger);
+}
+
+.trade-symbol {
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--text-primary);
+}
+
+.trade-amount {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.trade-agent {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.2rem;
+}
+
+.trade-time {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 0.75rem;
+}
+
+.trade-popover-divider {
+    height: 1px;
+    width: 100%;
+    background: rgba(148, 163, 184, 0.25);
+    margin: 0.75rem 0;
+}
+
+.trade-popover-stats {
+    display: grid;
+    gap: 0.5rem;
+    margin: 0;
+}
+
+.trade-popover-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.trade-popover-row dt {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+}
+
+.trade-popover-row dd {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.trade-popover-row dd.positive {
+    color: var(--success);
+}
+
+.trade-popover-row dd.negative {
+    color: var(--danger);
+}
+
+.trade-popover-row dd.neutral {
+    color: var(--text-secondary);
 }
 
 /* Action Flow */

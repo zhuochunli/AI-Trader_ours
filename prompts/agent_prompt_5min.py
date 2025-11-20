@@ -207,14 +207,28 @@ def get_intraday_agent_system_prompt_with_bars(
     # Format bar data
     def translate_bar_keys(bars: List[Dict]) -> List[Dict]:
         key_map = {
-            "c": "close_price",
-            "h": "high_price",
-            "l": "low_price",
-            "n": "number_of_trades",
-            "o": "open_price",
-            "t": "timestamp",
-            "v": "volume",
-            "vw": "volume_weighted_average_price",
+            "c": "Close Price",
+            "close": "Close Price",
+            "close_price": "Close Price",
+            "h": "High Price",
+            "high": "High Price",
+            "high_price": "High Price",
+            "l": "Low Price",
+            "low": "Low Price",
+            "low_price": "Low Price",
+            "n": "Number of Trades",
+            "trade_count": "Number of Trades",
+            "number_of_trades": "Number of Trades",
+            "o": "Open Price",
+            "open": "Open Price",
+            "open_price": "Open Price",
+            "t": "Timestamp",
+            "timestamp": "Timestamp",
+            "v": "Volume",
+            "volume": "Volume",
+            "vw": "Volume-Weighted Average Price",
+            "vwap": "Volume-Weighted Average Price",
+            "volume_weighted_average_price": "Volume-Weighted Average Price",
         }
         translated = []
         for bar in bars:
@@ -231,9 +245,21 @@ def get_intraday_agent_system_prompt_with_bars(
     today_bars_text = format_5min_bars(today_bars_translated, max_bars=50) if today_bars_translated else "No bars available yet (market just opened or data pending)"
     yesterday_bars_text = format_5min_bars(yesterday_bars_translated, max_bars=50) if yesterday_bars_translated else "No historical bars available"
     
-    # Extract prices from bars
-    yesterday_close_price = yesterday_bars_translated[-1].get("close_price", "Unknown") if yesterday_bars_translated else "Data not available"
-    current_price = today_bars_translated[-1].get("close_price", "Unknown") if today_bars_translated else "Data not available"
+    # Extract prices from bars with fallbacks
+    def extract_close(bar_list_translated: Optional[List[Dict]], bar_list_raw: Optional[List[Dict]]) -> str:
+        if bar_list_translated:
+            close_val = bar_list_translated[-1].get("Close Price")
+            if close_val not in (None, "Unknown"):
+                return close_val
+        if bar_list_raw:
+            last_bar = bar_list_raw[-1]
+            for key in ("close", "c", "close_price", "Close Price"):
+                if key in last_bar and last_bar[key] not in (None, "Unknown"):
+                    return last_bar[key]
+        return "Data not available"
+
+    yesterday_close_price = extract_close(yesterday_bars_translated, yesterday_bars)
+    current_price = extract_close(today_bars_translated, today_bars)
     
     return intraday_agent_system_prompt.format(
         symbol=symbol,

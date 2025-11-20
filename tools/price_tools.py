@@ -916,6 +916,13 @@ def format_5min_bars(bars: List[Dict[str, any]], max_bars: int = 50) -> str:
     lines.append("Timestamp     | Open Price | High Price | Low Price | Close Price |     Volume | Number of Trades | Volume-weighted Avg Price")
     lines.append("-" * 128)
     
+    def get_val(bar: Dict[str, any], *keys):
+        for key in keys:
+            value = bar.get(key)
+            if value not in (None, "Unknown"):
+                return value
+        return None
+    
     for bar in display_bars:
         # Parse timestamp - handle both ISO format and readable format
         timestamp = bar.get("timestamp", "") or bar.get("t", "")
@@ -929,14 +936,14 @@ def format_5min_bars(bars: List[Dict[str, any]], max_bars: int = 50) -> str:
         else:
             time_str = timestamp
         
-        open_price = bar.get("open_price", bar.get("open", bar.get("o", None)))
-        high_price = bar.get("high_price", bar.get("high", bar.get("h", None)))
-        low_price = bar.get("low_price", bar.get("low", bar.get("l", None)))
-        close_price = bar.get("close_price", bar.get("close", bar.get("c", None)))
-        volume = bar.get("volume", bar.get("v", None))
-        num_trades = bar.get("number_of_trades", bar.get("n", None))
-        vwap = bar.get("volume_weighted_average_price", bar.get("vw", None))
-
+        open_price = get_val(bar, "Open Price", "open_price", "open", "o")
+        high_price = get_val(bar, "High Price", "high_price", "high", "h")
+        low_price = get_val(bar, "Low Price", "low_price", "low", "l")
+        close_price = get_val(bar, "Close Price", "close_price", "close", "c")
+        volume = get_val(bar, "Volume", "volume", "v")
+        num_trades = get_val(bar, "Number of Trades", "number_of_trades", "trade_count", "n")
+        vwap = get_val(bar, "Volume-Weighted Average Price", "volume_weighted_average_price", "vwap", "vw")
+        
         lines.append(
             f"{time_str:13} | {fmt_price(open_price)} | {fmt_price(high_price)} | {fmt_price(low_price)} | "
             f"{fmt_price(close_price)} | {fmt_volume(volume)} | {fmt_count(num_trades)} | {fmt_price(vwap)}"
@@ -959,7 +966,12 @@ def get_5min_current_price(bars: List[Dict[str, any]]) -> Optional[float]:
         return None
     
     # Get the last bar's close price
-    return bars[-1].get("close")
+    last_bar = bars[-1]
+    for key in ("Close Price", "close_price", "close", "c"):
+        value = last_bar.get(key)
+        if value not in (None, "Unknown"):
+            return value
+    return None
 
 
 def get_5min_yesterday_close(bars: List[Dict[str, any]], current_time: str) -> Optional[float]:
@@ -990,10 +1002,19 @@ def get_5min_yesterday_close(bars: List[Dict[str, any]], current_time: str) -> O
                 yesterday_bars.append(bar)
         
         if yesterday_bars:
-            return yesterday_bars[-1].get("close")
+            for key in ("Close Price", "close_price", "close", "c"):
+                value = yesterday_bars[-1].get(key)
+                if value not in (None, "Unknown"):
+                    return value
         
         # If no yesterday data, return the first bar's close as fallback
-        return bars[0].get("close") if bars else None
+        first_bar = bars[0] if bars else None
+        if first_bar:
+            for key in ("Close Price", "close_price", "close", "c"):
+                value = first_bar.get(key)
+                if value not in (None, "Unknown"):
+                    return value
+        return None
         
     except Exception as e:
         print(f"Error getting yesterday close: {e}")

@@ -33,6 +33,16 @@ echo ""
 echo "💡 Press Ctrl+C to stop the server"
 echo ""
 
+# Ensure docs/data points to runtime data directory
+if [ -d "docs/data" ] && [ ! -L "docs/data" ]; then
+    echo "♻️  Converting docs/data directory into symlink -> ../data"
+    rm -rf docs/data
+fi
+
+if [ ! -e "docs/data" ]; then
+    ln -s ../data docs/data
+fi
+
 # Start the HTTP server
 cd docs && $PYTHON_CMD -m http.server $PORT
 

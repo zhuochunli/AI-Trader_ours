@@ -8,6 +8,12 @@ let allAgentsData = {};
 let isLogScale = false;
 let isLoading = false; // Flag to prevent multiple simultaneous loads
 let marketStatusTimer = null;
+let tradePopoverEl = null;
+let activeTradeMarker = null;
+let tradePopoverDocumentListenerAttached = false;
+let showTradeMarkers = false;
+let tradeToggleButton = null;
+let lastMarketOpenStatus = null;
 
 // Color palette for different agents
 const agentColors = [
@@ -20,6 +26,47 @@ const agentColors = [
     '#fb5607', // Orange
     '#06ffa5'  // Mint
 ];
+
+const TRADE_MARKER_BASE_SIZE = 12;
+const TRADE_MARKER_HOVER_SCALE = 1.2;
+const LIVE_REFRESH_INTERVAL_OPEN_MS = 60000; // 1 minute
+const LIVE_REFRESH_INTERVAL_CLOSED_MS = 3600000; // 1 hour
+
+function drawTradeArrow(ctx, x, y, size, direction, fillColor, borderColor, lineWidth) {
+    const headHeight = size * 0.68;
+    const tailHeight = size * 0.35;
+    const tailExtra = size * 0.5;
+    const halfWidth = size * 0.42;
+    const tailHalfWidth = size * 0.16;
+
+    ctx.beginPath();
+    if (direction === 'buy') {
+        ctx.moveTo(x, y - headHeight);
+        ctx.lineTo(x + halfWidth, y + tailHeight);
+        ctx.lineTo(x + tailHalfWidth, y + tailHeight);
+        ctx.lineTo(x + tailHalfWidth, y + tailHeight + tailExtra);
+        ctx.lineTo(x - tailHalfWidth, y + tailHeight + tailExtra);
+        ctx.lineTo(x - tailHalfWidth, y + tailHeight);
+        ctx.lineTo(x - halfWidth, y + tailHeight);
+    } else {
+        ctx.moveTo(x, y + headHeight);
+        ctx.lineTo(x + halfWidth, y - tailHeight);
+        ctx.lineTo(x + tailHalfWidth, y - tailHeight);
+        ctx.lineTo(x + tailHalfWidth, y - tailHeight - tailExtra);
+        ctx.lineTo(x - tailHalfWidth, y - tailHeight - tailExtra);
+        ctx.lineTo(x - tailHalfWidth, y - tailHeight);
+        ctx.lineTo(x - halfWidth, y - tailHeight);
+    }
+    ctx.closePath();
+
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.fillStyle = fillColor;
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = lineWidth;
+    ctx.fill();
+    ctx.stroke();
+}
 
 // Cache for loaded SVG images
 const iconImageCache = {};
@@ -40,6 +87,241 @@ function loadIconImage(iconPath) {
         img.onerror = reject;
         img.src = iconPath;
     });
+}
+
+function ensureTradePopover() {
+    if (!tradePopoverEl) {
+        tradePopoverEl = document.createElement('div');
+        tradePopoverEl.id = 'tradePopover';
+        tradePopoverEl.className = 'trade-popover hidden';
+        document.body.appendChild(tradePopoverEl);
+        tradePopoverEl.addEventListener('click', (event) => event.stopPropagation());
+    }
+
+    if (!tradePopoverDocumentListenerAttached) {
+        document.addEventListener('click', () => hideTradePopover());
+        tradePopoverDocumentListenerAttached = true;
+    }
+
+    return tradePopoverEl;
+}
+
+function hideChartTooltip(chart) {
+    try {
+        if (chart && chart.tooltip && typeof chart.tooltip.setActiveElements === 'function') {
+            chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+        }
+        const tooltipEl = document.getElementById('chartjs-tooltip');
+        if (tooltipEl) {
+            tooltipEl.style.opacity = 0;
+        }
+    } catch (error) {
+        console.warn('Failed to hide chart tooltip:', error);
+    }
+}
+
+function hideTradePopover() {
+    if (tradePopoverEl) {
+        tradePopoverEl.classList.add('hidden');
+        tradePopoverEl.classList.remove('active');
+    }
+    activeTradeMarker = null;
+}
+
+function updateTradeToggleButton() {
+    if (!tradeToggleButton) return;
+    tradeToggleButton.textContent = showTradeMarkers ? 'Hide Trades' : 'Show Trades';
+}
+
+function rebuildChart() {
+    if (chartInstance) {
+        chartInstance.destroy();
+        chartInstance = null;
+    }
+    createChart();
+}
+
+function adjustLiveRefreshForMarket(isOpen, statusChanged) {
+    if (!window.LiveLoader || typeof window.LiveLoader.updateRefreshInterval !== 'function') {
+        return;
+    }
+
+    const targetInterval = isOpen ? LIVE_REFRESH_INTERVAL_OPEN_MS : LIVE_REFRESH_INTERVAL_CLOSED_MS;
+    const immediate = statusChanged && isOpen;
+
+    window.LiveLoader.updateRefreshInterval(targetInterval, immediate);
+}
+
+function formatTradeTimestamp(timestamp) {
+    if (!timestamp) {
+        return 'Unknown time';
+    }
+
+    if (window.transactionLoader && typeof window.transactionLoader.formatDateTime === 'function') {
+        return window.transactionLoader.formatDateTime(timestamp);
+    }
+
+    const normalized = timestamp.includes('T') ? timestamp : timestamp.replace(' ', 'T');
+    const date = new Date(normalized);
+    if (Number.isNaN(date.valueOf())) {
+        return timestamp;
+    }
+
+    return date.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+        timeZoneName: 'short'
+    });
+}
+
+function formatShares(value) {
+    if (value === null || value === undefined) {
+        return '—';
+    }
+    // Clamp shares to 0 minimum (should never be negative, but protect against corrupted data)
+    const clampedValue = Math.max(0, value);
+    return new Intl.NumberFormat('en-US', {
+        maximumFractionDigits: 4
+    }).format(clampedValue);
+}
+
+function formatCurrencySoft(value) {
+    if (value === null || value === undefined) {
+        return '—';
+    }
+    try {
+        return dataLoader.formatCurrency(value);
+    } catch (e) {
+        return `$${value.toFixed(2)}`;
+    }
+}
+
+function getValueChangeDisplay(value) {
+    if (value === null || value === undefined) {
+        return '—';
+    }
+    const formatted = formatCurrencySoft(Math.abs(value));
+    return `${value >= 0 ? '+' : '-'}${formatted}`;
+}
+
+function showTradePopover({ dataset, dataPoint, element, chart }) {
+    const popover = ensureTradePopover();
+    const meta = dataPoint.meta || {};
+    const action = meta.action || 'trade';
+    const isSell = action === 'sell';
+    const symbol = meta.symbol || 'Unknown';
+    const amountFormatted = formatShares(meta.amount);
+    const displayName = meta.displayName || dataset.label || dataLoader.getAgentDisplayName(meta.agentName || dataset.agentName);
+    const timestamp = meta.timestamp || meta.assetDate;
+    const timeDisplay = formatTradeTimestamp(timestamp);
+
+    const priceDisplay = meta.price !== null && meta.price !== undefined
+        ? formatCurrencySoft(meta.price)
+        : 'Unknown';
+
+    const portfolioValueDisplay = meta.valueAfter !== null && meta.valueAfter !== undefined
+        ? formatCurrencySoft(meta.valueAfter)
+        : '—';
+
+    const valueChangeDisplay = meta.valueChange !== null && meta.valueChange !== undefined
+        ? getValueChangeDisplay(meta.valueChange)
+        : '—';
+
+    const remainingCashDisplay = meta.cashAfter !== null && meta.cashAfter !== undefined
+        ? formatCurrencySoft(meta.cashAfter)
+        : '—';
+
+    const sharesAfterDisplay = formatShares(meta.sharesAfter);
+
+    const changeClass = meta.valueChange > 0 ? 'positive' : (meta.valueChange < 0 ? 'negative' : 'neutral');
+
+    const html = `
+        <div class="trade-popover-header">
+            <span class="trade-badge ${isSell ? 'sell' : 'buy'}">${isSell ? 'Sell' : 'Buy'}</span>
+            <div class="trade-symbol">${symbol}</div>
+            <div class="trade-amount">×${amountFormatted}</div>
+        </div>
+        <div class="trade-agent">${displayName}</div>
+        <div class="trade-time">${timeDisplay}</div>
+        <div class="trade-popover-divider"></div>
+        <dl class="trade-popover-stats">
+            <div class="trade-popover-row">
+                <dt>Trade Price</dt>
+                <dd>${priceDisplay}</dd>
+            </div>
+            <div class="trade-popover-row">
+                <dt>Total Value</dt>
+                <dd>${portfolioValueDisplay}</dd>
+            </div>
+            <div class="trade-popover-row">
+                <dt>Value Change</dt>
+                <dd class="${changeClass}">${valueChangeDisplay}</dd>
+            </div>
+            <div class="trade-popover-row">
+                <dt>Shares After</dt>
+                <dd>${sharesAfterDisplay}</dd>
+            </div>
+            <div class="trade-popover-row">
+                <dt>Remaining Cash</dt>
+                <dd>${remainingCashDisplay}</dd>
+            </div>
+        </dl>
+    `;
+
+    popover.innerHTML = html;
+    popover.classList.add('hidden');
+    popover.classList.remove('active');
+
+    const canvasRect = chart.canvas.getBoundingClientRect();
+    const scrollX = window.pageXOffset;
+    const scrollY = window.pageYOffset;
+
+    const baseLeft = canvasRect.left + scrollX + element.x + 24;
+    const baseTop = canvasRect.top + scrollY + element.y;
+
+    // Make visible to measure
+    popover.classList.remove('hidden');
+    popover.style.left = '0px';
+    popover.style.top = '0px';
+    const popRect = popover.getBoundingClientRect();
+
+    let left = baseLeft;
+    let top = baseTop - popRect.height / 2;
+
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+
+    if (left + popRect.width > viewportWidth - 20) {
+        left = baseLeft - popRect.width - 40;
+    }
+
+    if (left < 20) {
+        left = 20;
+    }
+
+    if (top + popRect.height > viewportHeight - 20) {
+        top = viewportHeight - popRect.height - 20;
+    }
+
+    if (top < 20) {
+        top = 20;
+    }
+
+    popover.style.left = `${left}px`;
+    popover.style.top = `${top}px`;
+
+    // Trigger animation
+    popover.classList.add('active');
+    popover.classList.remove('hidden');
+
+    activeTradeMarker = {
+        id: meta.id,
+        datasetLabel: dataset.label
+    };
 }
 
 // Update market subtitle based on current market
@@ -76,6 +358,7 @@ async function loadDataAndRefresh() {
     isLoading = true;
     showLoading();
     disableMarketButtons();
+    hideTradePopover();
 
     try {
         // Ensure config is loaded first
@@ -112,6 +395,7 @@ async function loadDataAndRefresh() {
 
         // Destroy existing chart if it exists
         if (chartInstance) {
+            hideTradePopover();
             console.log('Destroying existing chart...');
             chartInstance.destroy();
             chartInstance = null;
@@ -130,6 +414,7 @@ async function loadDataAndRefresh() {
         await createLeaderboard();
         await createActionFlow();
         refreshMarketStatusBadge();
+        updateTradeToggleButton();
 
     } catch (error) {
         console.error('Error loading data:', error);
@@ -155,6 +440,7 @@ async function loadDataAndRefresh() {
         hideLoading();
         enableMarketButtons();
         refreshMarketStatusBadge();
+        updateTradeToggleButton();
         isLoading = false;
     }
 }
@@ -231,6 +517,12 @@ function updateMarketStatusIndicator() {
     badge.classList.remove('open', 'closed');
     badge.classList.add(status.isOpen ? 'open' : 'closed');
     textEl.textContent = status.detailText ? `${status.statusText} | ${status.detailText}` : status.statusText;
+
+    const previousStatus = lastMarketOpenStatus;
+    const statusChanged = previousStatus !== null && previousStatus !== status.isOpen;
+    lastMarketOpenStatus = status.isOpen;
+
+    adjustLiveRefreshForMarket(status.isOpen, statusChanged);
 }
 
 function refreshMarketStatusBadge() {
@@ -388,6 +680,13 @@ function createChart() {
     Object.keys(allAgentsData).forEach(agentName => {
         const agent = allAgentsData[agentName];
         agent.assetHistory.forEach(h => allDates.add(h.date));
+        (agent.tradeMarkers || []).forEach(marker => {
+            if (marker.assetDate) {
+                allDates.add(marker.assetDate);
+            } else if (marker.timestamp) {
+                allDates.add(marker.timestamp);
+            }
+        });
     });
 
     buyHoldSeries.forEach(entry => allDates.add(entry.date));
@@ -504,6 +803,101 @@ function createChart() {
         console.log(`[DATASET OBJECT ${index}] borderColor: ${datasetObj.borderColor}, pointHoverBackgroundColor: ${datasetObj.pointHoverBackgroundColor}`);
 
         datasets.push(datasetObj);
+
+        const assetValueLookup = new Map((data.assetHistory || []).map(entry => [entry.date, entry.value]));
+        let lastKnownValueForMarkers = null;
+        const buyPoints = [];
+        const sellPoints = [];
+
+        (data.tradeMarkers || []).forEach(marker => {
+            const markerDate = marker.assetDate || marker.timestamp || marker.date;
+            if (!markerDate) {
+                return;
+            }
+
+            let value = assetValueLookup.get(markerDate);
+            if (value === undefined && markerDate.includes(' ')) {
+                value = assetValueLookup.get(markerDate.replace(' ', 'T'));
+            }
+            if (value === undefined && marker.timestamp && marker.timestamp !== markerDate) {
+                value = assetValueLookup.get(marker.timestamp);
+            }
+            if ((value === undefined || value === null) && lastKnownValueForMarkers !== null) {
+                value = lastKnownValueForMarkers;
+            }
+            if (value === undefined || value === null) {
+                return;
+            }
+
+            lastKnownValueForMarkers = value;
+
+            const meta = {
+                ...marker,
+                assetValue: value,
+                displayName: dataLoader.getAgentDisplayName(agentName),
+                agentName
+            };
+
+            const point = {
+                x: markerDate,
+                y: value,
+                meta
+            };
+
+            if (marker.action === 'buy') {
+                buyPoints.push(point);
+            } else if (marker.action === 'sell') {
+                sellPoints.push(point);
+            }
+        });
+
+        if (showTradeMarkers && buyPoints.length > 0) {
+            datasets.push({
+                label: `${dataLoader.getAgentDisplayName(agentName)} Buys`,
+                data: buyPoints,
+                type: 'scatter',
+                showLine: false,
+                borderColor: color,
+                backgroundColor: color,
+                pointBackgroundColor: color,
+                pointBorderColor: '#ffffff',
+                pointBorderWidth: 1.5,
+                pointRadius: 0,
+                pointHoverRadius: 0,
+                agentName,
+                isTradeMarker: true,
+                tradeType: 'buy',
+                order: 200 + index,
+                spanGaps: false,
+                pointHitRadius: 12,
+                clip: false,
+                markerSize: TRADE_MARKER_BASE_SIZE
+            });
+        }
+
+        if (showTradeMarkers && sellPoints.length > 0) {
+            datasets.push({
+                label: `${dataLoader.getAgentDisplayName(agentName)} Sells`,
+                data: sellPoints,
+                type: 'scatter',
+                showLine: false,
+                borderColor: color,
+                backgroundColor: color,
+                pointBackgroundColor: color,
+                pointBorderColor: '#0f172a',
+                pointBorderWidth: 1.5,
+                pointRadius: 0,
+                pointHoverRadius: 0,
+                agentName,
+                isTradeMarker: true,
+                tradeType: 'sell',
+                order: 201 + index,
+                spanGaps: false,
+                pointHitRadius: 12,
+                clip: false,
+                markerSize: TRADE_MARKER_BASE_SIZE
+            });
+        }
     });
 
     if (buyHoldSeries.length > 0) {
@@ -521,26 +915,28 @@ function createChart() {
             return { x: date, y: null };
         });
 
-        datasets.push({
-            label: 'Buy-and-Hold',
-            data: buyHoldData,
-            borderColor: buyHoldColor,
-            backgroundColor: 'transparent',
-            borderWidth: 2,
-            borderDash: [5, 5],
-            tension: 0.2,
-            pointRadius: 0,
-            pointHoverRadius: 7,
-            pointHoverBackgroundColor: buyHoldColor,
-            pointHoverBorderColor: '#fff',
-            pointHoverBorderWidth: 2,
-            fill: false,
-            spanGaps: true,
-            cubicInterpolationMode: 'monotone',
-            isBaseline: true,
-            agentName: 'buy-and-hold',
-            agentIcon: dataLoader.getAgentIcon('buy-and-hold')
-        });
+        if (buyHoldData.some(point => point.y !== null)) {
+            datasets.push({
+                label: 'Buy-and-Hold',
+                data: buyHoldData,
+                borderColor: buyHoldColor,
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                borderDash: [5, 5],
+                tension: 0.2,
+                pointRadius: 0,
+                pointHoverRadius: 7,
+                pointHoverBackgroundColor: buyHoldColor,
+                pointHoverBorderColor: '#fff',
+                pointHoverBorderWidth: 2,
+                fill: false,
+                spanGaps: true,
+                cubicInterpolationMode: 'monotone',
+                isBaseline: true,
+                agentName: 'buy-and-hold',
+                agentIcon: dataLoader.getAgentIcon('buy-and-hold')
+            });
+        }
     }
 
     // Create gradient for area fills
@@ -563,6 +959,9 @@ function createChart() {
             chart.data.datasets.forEach((dataset, datasetIndex) => {
                 const meta = chart.getDatasetMeta(datasetIndex);
                 if (!meta.hidden && dataset.data.length > 0) {
+                    if (dataset.isTradeMarker) {
+                        return;
+                    }
                     const lastPoint = meta.data[meta.data.length - 1];
                     if (!lastPoint) {
                         return;
@@ -675,6 +1074,47 @@ function createChart() {
         }
     };
 
+    const tradeMarkerPlugin = {
+        id: 'tradeMarkerArrows',
+        afterDatasetsDraw: (chart) => {
+            const ctx = chart.ctx;
+
+            if (!showTradeMarkers) {
+                return;
+            }
+
+            chart.data.datasets.forEach((dataset, datasetIndex) => {
+                if (!dataset.isTradeMarker) {
+                    return;
+                }
+
+                const meta = chart.getDatasetMeta(datasetIndex);
+                if (!meta || meta.hidden) {
+                    return;
+                }
+
+                const baseSize = dataset.markerSize || TRADE_MARKER_BASE_SIZE;
+                const borderWidth = dataset.pointBorderWidth ?? 1.5;
+                const fillColor = dataset.pointBackgroundColor || dataset.backgroundColor || dataset.borderColor || '#ffffff';
+                const strokeColor = dataset.pointBorderColor || dataset.borderColor || '#0f172a';
+                const direction = dataset.tradeType === 'sell' ? 'sell' : 'buy';
+
+                meta.data.forEach((element) => {
+                    if (!element || element.skip || typeof element.x !== 'number' || typeof element.y !== 'number') {
+                        return;
+                    }
+
+                    const isActive = element.active;
+                    const drawSize = isActive ? baseSize * TRADE_MARKER_HOVER_SCALE : baseSize;
+
+                    ctx.save();
+                    drawTradeArrow(ctx, element.x, element.y, drawSize, direction, fillColor, strokeColor, borderWidth);
+                    ctx.restore();
+                });
+            });
+        }
+    };
+
     console.log('Creating chart with', datasets.length, 'datasets');
     console.log('Datasets summary:', datasets.map(d => ({
         label: d.label,
@@ -697,6 +1137,56 @@ function createChart() {
             responsive: true,
             maintainAspectRatio: false,
             resizeDelay: 200,
+            onClick: (event, elements, chart) => {
+        const nativeEvent = event?.native || event;
+        const clickElements = chart.getElementsAtEventForMode(
+            nativeEvent,
+            'nearest',
+            { intersect: true },
+            false
+        );
+
+        if (!clickElements || clickElements.length === 0) {
+                    hideTradePopover();
+                    return;
+                }
+
+        const tradeElement = clickElements.find(el => {
+            const ds = chart.data.datasets[el.datasetIndex];
+            return ds && ds.isTradeMarker;
+        });
+
+        if (!tradeElement) {
+            hideTradePopover();
+        return;
+    }
+
+        const dataset = chart.data.datasets[tradeElement.datasetIndex];
+        const dataPoint = dataset?.data?.[tradeElement.index];
+
+        if (!dataset || !dataPoint || !dataPoint.meta) {
+            hideTradePopover();
+            return;
+        }
+
+        if (activeTradeMarker && activeTradeMarker.id === dataPoint.meta.id) {
+                    hideTradePopover();
+                    return;
+                }
+
+                if (event && event.native) {
+                    event.native.stopPropagation();
+                }
+
+        hideChartTooltip(chart);
+
+                showTradePopover({
+                    dataset,
+                    dataPoint,
+            element: tradeElement.element,
+                    chart
+                });
+            },
             layout: {
                 padding: {
                     right: 50,
@@ -787,16 +1277,19 @@ function createChart() {
                             let innerHtml = `<div class="tooltip-title">${titleHtml}</div>`;
                             innerHtml += '<div class="tooltip-body">';
 
-                            sortedPoints.forEach((dataPoint, index) => {
+                            let leaderboardRank = 1;
+                            sortedPoints.forEach((dataPoint) => {
                                 const dataset = dataPoint.dataset;
+                                if (dataset.isTradeMarker) {
+                                    return;
+                                }
                                 const agentName = dataset.agentName;
                                 const displayName = dataset.label;
                                 const value = dataPoint.parsed.y;
                                 const icon = dataLoader.getAgentIcon(agentName);
                                 const color = dataset.borderColor;
 
-                                // Add ranking badge
-                                const rankBadge = `<span class="rank-badge">#${index + 1}</span>`;
+                                const rankBadge = `<span class="rank-badge">#${leaderboardRank++}</span>`;
 
                                 innerHtml += `
                                     <div class="tooltip-row">
@@ -933,7 +1426,7 @@ function createChart() {
                 }
             }
         },
-        plugins: [iconPlugin]
+        plugins: [iconPlugin, tradeMarkerPlugin]
     });
 }
 
@@ -1007,6 +1500,7 @@ function toggleScale() {
 
     // Update chart
     if (chartInstance) {
+        hideTradePopover();
         chartInstance.destroy();
     }
     createChart();
@@ -1063,6 +1557,17 @@ function exportData() {
 
 // Set up event listeners
 function setupEventListeners() {
+    tradeToggleButton = document.getElementById('toggle-trades');
+    if (tradeToggleButton) {
+        tradeToggleButton.addEventListener('click', () => {
+            showTradeMarkers = !showTradeMarkers;
+            updateTradeToggleButton();
+            hideTradePopover();
+            hideChartTooltip(chartInstance);
+            rebuildChart();
+        });
+    }
+
     document.getElementById('toggle-log').addEventListener('click', toggleScale);
     document.getElementById('export-chart').addEventListener('click', exportData);
 
@@ -1156,6 +1661,8 @@ function setupEventListeners() {
 
     // Also handle orientation change for mobile
     window.addEventListener('orientationchange', handleResize);
+
+    updateTradeToggleButton();
 }
 
 // Create leaderboard

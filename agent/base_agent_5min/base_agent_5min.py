@@ -7,8 +7,15 @@ import os
 import json
 import asyncio
 import time as time_module
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Dict, List, Optional, Any
+try:
+    import fcntl  # type: ignore[attr-defined]
+
+    HAVE_FCNTL = True
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+    HAVE_FCNTL = False
 from pathlib import Path
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -309,9 +316,11 @@ class BaseAgent_5Min(BaseAgent):
             print(f"✅ Cleared position history: {self.position_file}")
         
         # Clear log directory to remove old trades
-        log_dir = os.path.join(self.data_path, "logs")
+        import shutil
+
+        for dir_name in ("logs", "log"):
+            log_dir = os.path.join(self.data_path, dir_name)
         if os.path.exists(log_dir):
-            import shutil
             shutil.rmtree(log_dir)
             print(f"✅ Cleared log history: {log_dir}")
         
@@ -359,6 +368,15 @@ class BaseAgent_5Min(BaseAgent):
         
         print(f"✅ Initialized with ${self.initial_cash} cash, all positions at 0")
         print(f"📊 Trading stocks: {', '.join(self.trading_symbols)}")
+        # Ensure legacy data path mirrors new location
+        legacy_dir = os.path.join(os.path.dirname(self.base_log_path), "agent_data", self.signature, "position")
+        try:
+            os.makedirs(legacy_dir, exist_ok=True)
+            legacy_file = os.path.join(legacy_dir, "position.jsonl")
+            with open(legacy_file, "w") as f:
+                f.write(json.dumps(initial_position) + "\n")
+        except Exception as exc:
+            print(f"⚠️  Warning: unable to seed legacy path for {self.signature}: {exc}")
     
     def _get_display_name(self) -> str:
         """Get display name for frontend based on model"""
@@ -411,43 +429,110 @@ class BaseAgent_5Min(BaseAgent):
     def _update_live_agents_manifest(self, metadata: Dict[str, Any]) -> None:
         """Update live agents manifest for frontend auto-detection."""
         try:
-            base_path = self.base_log_path if os.path.isabs(self.base_log_path) else os.path.join(Path(__file__).resolve().parents[2], self.base_log_path)
+            base_path = (
+                self.base_log_path
+                if os.path.isabs(self.base_log_path)
+                else os.path.join(Path(__file__).resolve().parents[2], self.base_log_path)
+            )
             manifest_path = os.path.join(base_path, "live_agents.json")
             os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
-            
+
             existing: List[Dict[str, Any]] = []
-            if os.path.exists(manifest_path):
-                with open(manifest_path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                    if isinstance(loaded, list):
-                        existing = loaded
-            
-            entry = {
-                "folder": self.signature,
-                "display_name": metadata.get("display_name", self.signature),
-                "icon": metadata.get("icon", "./figs/stock.svg"),
-                "color": metadata.get("color"),
-                "basemodel": metadata.get("basemodel"),
-                "stock_symbols": metadata.get("stock_symbols", []),
-                "live_mode": metadata.get("live_mode", True),
-                "start_time": metadata.get("start_time"),
-                "enabled": True
-            }
-            
-            updated = False
-            for idx, item in enumerate(existing):
-                if isinstance(item, dict) and item.get("folder") == self.signature:
-                    existing[idx] = {**item, **entry}
-                    updated = True
-                    break
-            
-            if not updated:
-                existing.append(entry)
-            
-            with open(manifest_path, "w", encoding="utf-8") as f:
+
+            file_mode = "a+"
+            with open(manifest_path, file_mode, encoding="utf-8") as f:
+                if HAVE_FCNTL:
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_EX)
+                    except Exception as lock_error:
+                        print(f"⚠️  Warning: unable to lock manifest file: {lock_error}")
+
+                f.seek(0)
+                raw = f.read().strip()
+                if raw:
+                    try:
+                        loaded = json.loads(raw)
+                        if isinstance(loaded, list):
+                            existing = loaded
+                    except json.JSONDecodeError:
+                        print("⚠️  Warning: corrupt live_agents.json detected; rebuilding manifest...")
+                        existing = []
+
+                entry = {
+                    "folder": self.signature,
+                    "display_name": metadata.get("display_name", self.signature),
+                    "icon": metadata.get("icon", "./figs/stock.svg"),
+                    "color": metadata.get("color"),
+                    "basemodel": metadata.get("basemodel"),
+                    "stock_symbols": metadata.get("stock_symbols", []),
+                    "live_mode": metadata.get("live_mode", True),
+                    "start_time": metadata.get("start_time"),
+                    "enabled": True,
+                }
+
+                updated = False
+                for idx, item in enumerate(existing):
+                    if isinstance(item, dict) and item.get("folder") == self.signature:
+                        existing[idx] = {**item, **entry}
+                        updated = True
+                        break
+
+                if not updated:
+                    existing.append(entry)
+
+                f.seek(0)
+                f.truncate()
                 json.dump(existing, f, ensure_ascii=False, indent=2)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+
+                if HAVE_FCNTL:
+                    try:
+                        fcntl.flock(f, fcntl.LOCK_UN)
+                    except Exception:
+                        pass
         except Exception as exc:
             print(f"⚠️  Warning: failed to update live agents manifest for {self.signature}: {exc}")
+    
+    def _seconds_until_next_market_open(self, current_time_et: datetime) -> float:
+        """
+        Calculate seconds until the next regular US market open (09:30 ET).
+        Weekends are skipped; holidays fall back to the next weekday at 09:30.
+        """
+        import pytz
+
+        et_tz = pytz.timezone('US/Eastern')
+        calendar = getattr(self.cache_manager, "_alpaca_calendar", None)
+
+        # Same-day open if before 9:30 AM ET on a weekday
+        same_day_open = current_time_et.replace(hour=9, minute=30, second=0, microsecond=0)
+        if current_time_et < same_day_open and current_time_et.weekday() < 5:
+            return max((same_day_open - current_time_et).total_seconds(), 0.0)
+
+        if calendar:
+            try:
+                sorted_entries = sorted(
+                    (entry for entry in calendar if entry.get("date") and entry.get("open") and entry.get("close")),
+                    key=lambda e: e["date"],
+                )
+                for entry in sorted_entries:
+                    entry_date = datetime.strptime(entry["date"], "%Y-%m-%d")
+                    open_dt = et_tz.localize(datetime.combine(entry_date, time(9, 30)))
+                    if open_dt > current_time_et:
+                        return max((open_dt - current_time_et).total_seconds(), 0.0)
+            except Exception:
+                pass
+
+        # Otherwise, advance to the next weekday 09:30
+        next_day = current_time_et + timedelta(days=1)
+        while next_day.weekday() >= 5:
+            next_day += timedelta(days=1)
+
+        next_open = next_day.replace(hour=9, minute=30, second=0, microsecond=0)
+        return max((next_open - current_time_et).total_seconds(), 0.0)
     
     def is_market_open(self) -> bool:
         """
@@ -516,10 +601,15 @@ class BaseAgent_5Min(BaseAgent):
                     # Display in readable format for console
                     readable_time = current_time_et.strftime("%Y-%m-%d %H:%M:%S")
                     if last_closed_log is None or (current_time_et - last_closed_log).total_seconds() >= 3600:
-                        print(f"⏸️  Market closed at {readable_time} ET. Waiting...")
+                    print(f"⏸️  Market closed at {readable_time} ET. Waiting...")
                         last_closed_log = current_time_et
-                    # Check again in 5 minutes
-                    await asyncio.sleep(300)
+                    seconds_until_open = self._seconds_until_next_market_open(current_time_et)
+                    sleep_seconds = min(3600, seconds_until_open if seconds_until_open > 0 else 3600)
+                    if sleep_seconds < 60:
+                        sleep_seconds = 60
+                    sleep_minutes = sleep_seconds / 60
+                    print(f"🕒 Sleeping {sleep_minutes:.1f} minutes before next market status check")
+                    await asyncio.sleep(sleep_seconds)
                     continue
                 else:
                     last_closed_log = None

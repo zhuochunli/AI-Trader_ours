@@ -219,14 +219,29 @@ class BarCacheManager:
             # Format bars
             formatted_bars = []
             for bar in bars:
-                formatted_bars.append({
+                formatted = {
                     "timestamp": bar["t"],
+                    "t": bar["t"],
                     "open": bar["o"],
+                    "o": bar["o"],
                     "high": bar["h"],
+                    "h": bar["h"],
                     "low": bar["l"],
+                    "l": bar["l"],
                     "close": bar["c"],
-                    "volume": bar["v"]
-                })
+                    "c": bar["c"],
+                    "volume": bar["v"],
+                    "v": bar["v"],
+                }
+                trade_count = bar.get("n")
+                if trade_count is not None:
+                    formatted["trade_count"] = trade_count
+                    formatted["n"] = trade_count
+                vwap_val = bar.get("vw")
+                if vwap_val is not None:
+                    formatted["vwap"] = vwap_val
+                    formatted["vw"] = vwap_val
+                formatted_bars.append(formatted)
             
             print(f"✅ Fetched {len(formatted_bars)} bars for {symbol} from {start_date} to {end_date or 'now'}")
             return formatted_bars

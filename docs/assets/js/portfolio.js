@@ -419,10 +419,31 @@ async function updateAllocationChart(agentName) {
 
     // Create new chart
     const ctx = document.getElementById('allocationChart').getContext('2d');
-    const colors = [
-        '#00d4ff', '#00ffcc', '#ff006e', '#ffbe0b', '#8338ec',
-        '#3a86ff', '#fb5607', '#06ffa5', '#ff006e', '#ffbe0b', '#8338ec'
+    
+    // Define consistent color mapping for common assets
+    const assetColorMap = {
+        'CASH': '#00d4ff',      // Blue for cash
+        'QQQ': '#00ffcc',       // Cyan for QQQ
+        'Others': '#ff006e'     // Pink for others
+    };
+    
+    // Extended color palette for other assets
+    const defaultColors = [
+        '#ffbe0b', '#8338ec', '#3a86ff', '#fb5607', '#06ffa5',
+        '#ff006e', '#ffbe0b', '#8338ec', '#3a86ff', '#fb5607'
     ];
+    
+    // Assign colors based on asset type, fallback to default palette
+    let colorIndex = 0;
+    const backgroundColor = topAllocations.map(a => {
+        if (assetColorMap[a.label]) {
+            return assetColorMap[a.label];
+        }
+        // For unknown assets, use default palette
+        const color = defaultColors[colorIndex % defaultColors.length];
+        colorIndex++;
+        return color;
+    });
 
     allocationChart = new Chart(ctx, {
         type: 'doughnut',
@@ -430,7 +451,7 @@ async function updateAllocationChart(agentName) {
             labels: topAllocations.map(a => a.label),
             datasets: [{
                 data: topAllocations.map(a => a.value),
-                backgroundColor: colors,
+                backgroundColor: backgroundColor,
                 borderWidth: 2,
                 borderColor: '#1a2238'
             }]

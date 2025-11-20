@@ -81,6 +81,15 @@ def buy(symbol: str, amount: int) -> Dict[str, Any]:
     # Get current trading date from environment variable
     today_date = get_config_value("TODAY_DATE")
 
+    # Validate amount is positive
+    if amount <= 0:
+        return {
+            "error": f"Buy amount must be positive! You tried to buy {amount} shares.",
+            "symbol": symbol,
+            "amount": amount,
+            "date": today_date,
+        }
+
     # Auto-detect market type based on symbol format
     market = "cn" if symbol.endswith((".SH", ".SZ")) else "us"
 
@@ -170,6 +179,16 @@ def buy(symbol: str, amount: int) -> Dict[str, Any]:
 
         # Increase stock position quantity (initialize to 0 if symbol doesn't exist yet)
         new_position[symbol] = new_position.get(symbol, 0) + amount
+        
+        # Safety check: ensure shares never go negative
+        if new_position[symbol] < 0:
+            return {
+                "error": f"Invalid position! This would result in negative shares ({new_position[symbol]}).",
+                "symbol": symbol,
+                "current_position": current_position.get(symbol, 0),
+                "amount": amount,
+                "date": today_date,
+            }
 
         # Step 6: Record transaction to position.jsonl file
         # Build file path: {project_root}/data/{log_path}/{signature}/position/position.jsonl
@@ -279,6 +298,15 @@ def sell(symbol: str, amount: int) -> Dict[str, Any]:
     # Get current trading date from environment variable
     today_date = get_config_value("TODAY_DATE")
 
+    # Validate amount is positive
+    if amount <= 0:
+        return {
+            "error": f"Sell amount must be positive! You tried to sell {amount} shares.",
+            "symbol": symbol,
+            "amount": amount,
+            "date": today_date,
+        }
+
     # Auto-detect market type based on symbol format
     market = "cn" if symbol.endswith((".SH", ".SZ")) else "us"
 
@@ -377,6 +405,16 @@ def sell(symbol: str, amount: int) -> Dict[str, Any]:
 
     # Decrease stock position quantity
     new_position[symbol] -= amount
+    
+    # Safety check: ensure shares never go negative
+    if new_position[symbol] < 0:
+        return {
+            "error": f"Invalid position! This would result in negative shares ({new_position[symbol]}).",
+            "symbol": symbol,
+            "current_position": current_position.get(symbol, 0),
+            "amount": amount,
+            "date": today_date,
+        }
 
     # Increase cash balance: sell price × sell quantity
     # Use get method to ensure CASH field exists, default to 0 if not present

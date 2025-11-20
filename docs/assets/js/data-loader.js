@@ -100,7 +100,7 @@ class DataLoader {
                         if (typeof window.loadAllData === 'function') {
                             window.loadAllData();
                         }
-                    });
+                    }, 60000);
                 }
                 
                 return agents;
@@ -130,7 +130,7 @@ class DataLoader {
                     if (typeof window.loadAllData === 'function') {
                         window.loadAllData();
                     }
-                });
+                }, 60000);
             }
 
             return agents;
@@ -497,6 +497,35 @@ class DataLoader {
 
         console.log(`Processing ${positions.length} positions for ${agentName}...`);
 
+        const parseTimestampForSort = (value) => {
+            if (!value) return Number.NaN;
+            if (typeof value !== 'string') return Number.NaN;
+            const normalized = value.includes('T') ? value : value.replace(' ', 'T');
+            const parsed = Date.parse(normalized);
+            return Number.isNaN(parsed) ? Number.NaN : parsed;
+        };
+
+        const positionsChronological = positions.slice().sort((a, b) => {
+            const timeA = parseTimestampForSort(a?.date);
+            const timeB = parseTimestampForSort(b?.date);
+
+            if (!Number.isNaN(timeA) && !Number.isNaN(timeB) && timeA !== timeB) {
+                return timeA - timeB;
+            }
+
+            if (!Number.isNaN(timeA) && Number.isNaN(timeB)) return -1;
+            if (Number.isNaN(timeA) && !Number.isNaN(timeB)) return 1;
+
+            const dateA = (a?.date || '').toString();
+            const dateB = (b?.date || '').toString();
+            const cmp = dateA.localeCompare(dateB);
+            if (cmp !== 0) return cmp;
+
+            const idA = (a?.id ?? a?.action_id ?? 0);
+            const idB = (b?.id ?? b?.action_id ?? 0);
+            return idA - idB;
+        });
+
         let assetHistory = [];
         let serviceStartTime = null;
         let initialCash = null;
@@ -704,6 +733,142 @@ class DataLoader {
             return null;
         }
 
+        const assetValueMap = new Map(assetHistory.map(entry => [entry.date, entry.value]));
+        const tradeMarkers = [];
+        let prevEntryForTrade = null;
+        let lastKnownAssetValue = assetHistory.length > 0 ? assetHistory[0].value : null;
+        let lastKnownCash = initialCash ?? (positionsChronological[0]?.positions?.CASH ?? positions[0]?.positions?.CASH ?? null);
+
+        positionsChronological.forEach(entry => {
+            if (!entry) return;
+
+            const assetKey = entry.dateKey || entry.date || null;
+            const mappedValue = assetKey ? assetValueMap.get(assetKey) : undefined;
+
+            if (!entry.this_action) {
+                if (Number.isFinite(mappedValue)) {
+                    lastKnownAssetValue = mappedValue;
+                }
+                if (typeof entry?.positions?.CASH === 'number') {
+                    lastKnownCash = entry.positions.CASH;
+                }
+                prevEntryForTrade = entry;
+                return;
+            }
+
+            const action = entry.this_action.action;
+            if (!action || action === 'no_trade') {
+                if (Number.isFinite(mappedValue)) {
+                    lastKnownAssetValue = mappedValue;
+                }
+                if (typeof entry?.positions?.CASH === 'number') {
+                    lastKnownCash = entry.positions.CASH;
+                }
+                prevEntryForTrade = entry;
+                return;
+            }
+
+            const rawAmount = entry.this_action.amount;
+            let amount = null;
+            if (typeof rawAmount === 'number' && Number.isFinite(rawAmount)) {
+                amount = rawAmount;
+            } else if (typeof rawAmount === 'string') {
+                const parsed = parseFloat(rawAmount);
+                if (Number.isFinite(parsed)) {
+                    amount = parsed;
+                }
+            }
+
+            if (!amount || amount === 0) {
+                if (Number.isFinite(mappedValue)) {
+                    lastKnownAssetValue = mappedValue;
+                }
+                if (typeof entry?.positions?.CASH === 'number') {
+                    lastKnownCash = entry.positions.CASH;
+                }
+                prevEntryForTrade = entry;
+                return;
+            }
+
+            const prevPositionsSnapshot = prevEntryForTrade?.positions || null;
+            const prevCash = (prevPositionsSnapshot && typeof prevPositionsSnapshot.CASH === 'number')
+                ? prevPositionsSnapshot.CASH
+                : (typeof lastKnownCash === 'number' ? lastKnownCash : null);
+
+            const currentPositionsSnapshot = entry.positions || {};
+            const currentCash = typeof currentPositionsSnapshot.CASH === 'number'
+                ? currentPositionsSnapshot.CASH
+                : null;
+
+            if (typeof currentCash === 'number') {
+                lastKnownCash = currentCash;
+            }
+
+            let executionPrice = null;
+            if (prevCash !== null && currentCash !== null) {
+                if (action === 'buy') {
+                    const spent = prevCash - currentCash;
+                    executionPrice = spent / amount;
+                } else if (action === 'sell') {
+                    const received = currentCash - prevCash;
+                    executionPrice = received / amount;
+                }
+                if (!Number.isFinite(executionPrice)) {
+                    executionPrice = null;
+                }
+            }
+
+            const symbol = entry.this_action.symbol || entry.this_action.ticker || 'Unknown';
+            const assetDate = assetKey || entry.date;
+
+            const valueBefore = Number.isFinite(lastKnownAssetValue) ? lastKnownAssetValue : null;
+
+            let valueAfter = mappedValue;
+            if (valueAfter === undefined && assetDate && assetDate.includes(' ')) {
+                const isoKey = assetDate.replace(' ', 'T');
+                valueAfter = assetValueMap.get(isoKey);
+            }
+            if (valueAfter === undefined && entry.date && entry.date !== assetDate) {
+                valueAfter = assetValueMap.get(entry.date);
+            }
+            if (valueAfter === undefined) {
+                valueAfter = lastKnownAssetValue;
+            }
+
+            if (Number.isFinite(valueAfter)) {
+                lastKnownAssetValue = valueAfter;
+            }
+
+            const sharesAfter = typeof currentPositionsSnapshot[symbol] === 'number'
+                ? currentPositionsSnapshot[symbol]
+                : null;
+
+            tradeMarkers.push({
+                id: entry.id ?? `${entry.date}-${action}-${symbol}-${amount}`,
+                assetDate: assetDate,
+                timestamp: entry.date,
+                action,
+                symbol,
+                amount,
+                price: executionPrice,
+                cashAfter: currentCash,
+                cashBefore: prevCash,
+                sharesAfter,
+                valueAfter: valueAfter ?? null,
+                valueBefore: valueBefore ?? null,
+                valueChange: (Number.isFinite(valueAfter) && Number.isFinite(valueBefore))
+                    ? valueAfter - valueBefore
+                    : null,
+                positionsSnapshot: currentPositionsSnapshot,
+                rawAction: entry.this_action
+            });
+
+            prevEntryForTrade = entry;
+        });
+
+        const mergedTradeMarkers = this.mergeTradeMarkers(tradeMarkers);
+        console.log(`[loadAgentData] ${agentName} trade markers computed: ${tradeMarkers.length}, merged down to ${mergedTradeMarkers.length}`);
+
         const result = {
             name: agentName,
             positions: positions,
@@ -715,6 +880,7 @@ class DataLoader {
                 : 0,
             startTime: serviceStartTime,
             initialCash: initialCash,
+            tradeMarkers: mergedTradeMarkers,
         };
 
         console.log(`Successfully loaded data for ${agentName}:`, {
@@ -729,6 +895,157 @@ class DataLoader {
         });
 
         return result;
+    }
+
+    firstDefined(...values) {
+        for (const value of values) {
+            if (value !== undefined && value !== null) {
+                return value;
+            }
+        }
+        return undefined;
+    }
+
+    firstFinite(...values) {
+        for (const value of values) {
+            if (Number.isFinite(value)) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    computeWeightedPrice(signedExisting, existing, signedIncoming, incoming) {
+        let totalNotional = 0;
+        let totalAmount = 0;
+
+        if (Number.isFinite(existing.price) && Number.isFinite(existing.amount)) {
+            totalNotional += Math.abs(existing.price * signedExisting);
+            totalAmount += Math.abs(signedExisting);
+        }
+
+        if (Number.isFinite(incoming.price) && Number.isFinite(incoming.amount)) {
+            totalNotional += Math.abs(incoming.price * signedIncoming);
+            totalAmount += Math.abs(signedIncoming);
+        }
+
+        if (totalAmount === 0) {
+            return null;
+        }
+
+        const weighted = totalNotional / totalAmount;
+        return Number.isFinite(weighted) ? weighted : null;
+    }
+
+    combineTradeMarkers(existing, incoming) {
+        const existingAmount = Number.isFinite(existing.amount) ? existing.amount : 0;
+        const incomingAmount = Number.isFinite(incoming.amount) ? incoming.amount : 0;
+
+        const signedExisting = (existing.action === 'sell' ? -1 : 1) * existingAmount;
+        const signedIncoming = (incoming.action === 'sell' ? -1 : 1) * incomingAmount;
+
+        const netSigned = signedExisting + signedIncoming;
+        if (!Number.isFinite(netSigned)) {
+            return { ...existing };
+        }
+
+        const cashBefore = this.firstDefined(existing.cashBefore, incoming.cashBefore);
+        const cashAfter = this.firstDefined(incoming.cashAfter, existing.cashAfter);
+
+        const valueBefore = this.firstFinite(existing.valueBefore, incoming.valueBefore);
+        const valueAfter = this.firstFinite(incoming.valueAfter, existing.valueAfter);
+
+        const result = {
+            ...existing,
+            amount: Math.abs(netSigned),
+            action: netSigned >= 0 ? 'buy' : 'sell',
+            cashBefore: cashBefore !== undefined ? cashBefore : null,
+            cashAfter: cashAfter !== undefined ? cashAfter : null,
+            price: null,
+            valueBefore: valueBefore !== null ? valueBefore : null,
+            valueAfter: valueAfter !== null ? valueAfter : null,
+            valueChange: null,
+            positionsSnapshot: incoming.positionsSnapshot || existing.positionsSnapshot,
+            rawAction:
+                Array.isArray(existing.rawAction)
+                    ? [...existing.rawAction, incoming.rawAction]
+                    : existing.rawAction
+                        ? [existing.rawAction, incoming.rawAction]
+                        : incoming.rawAction,
+        };
+
+        if (result.valueBefore !== null && result.valueAfter !== null) {
+            result.valueChange = result.valueAfter - result.valueBefore;
+        }
+
+        if (result.cashBefore !== null && result.cashAfter !== null && result.amount > 0) {
+            if (result.action === 'buy') {
+                const spent = result.cashBefore - result.cashAfter;
+                const price = spent / result.amount;
+                result.price = Number.isFinite(price) ? price : null;
+            } else {
+                const received = result.cashAfter - result.cashBefore;
+                const price = received / result.amount;
+                result.price = Number.isFinite(price) ? price : null;
+            }
+        }
+
+        if (result.price === null) {
+            result.price = this.computeWeightedPrice(
+                signedExisting,
+                existing,
+                signedIncoming,
+                incoming
+            );
+        }
+
+        // Recalculate sharesAfter from the final positionsSnapshot
+        const symbol = result.symbol || existing.symbol || incoming.symbol;
+        if (symbol && result.positionsSnapshot) {
+            result.sharesAfter = typeof result.positionsSnapshot[symbol] === 'number'
+                ? result.positionsSnapshot[symbol]
+                : null;
+        } else {
+            // Fallback to incoming sharesAfter if positionsSnapshot is not available
+            result.sharesAfter = incoming.sharesAfter !== undefined ? incoming.sharesAfter : existing.sharesAfter;
+        }
+
+        result.id = `${result.timestamp || result.assetDate}-${result.action}-${result.symbol}-${result.amount}`;
+
+        return result.amount > 0 ? result : null;
+    }
+
+    mergeTradeMarkers(markers) {
+        if (!Array.isArray(markers) || markers.length === 0) {
+            return [];
+        }
+
+        const merged = [];
+
+        markers.forEach(marker => {
+            if (!marker) {
+                return;
+            }
+
+            const previous = merged[merged.length - 1];
+
+            if (
+                previous &&
+                previous.timestamp === marker.timestamp &&
+                previous.symbol === marker.symbol
+            ) {
+                const combined = this.combineTradeMarkers(previous, marker);
+                if (combined) {
+                    merged[merged.length - 1] = combined;
+                } else {
+                    merged.pop();
+                }
+            } else {
+                merged.push({ ...marker });
+            }
+        });
+
+        return merged;
     }
 
     // Load benchmark data (QQQ for US, SSE 50 for A-shares)
@@ -914,6 +1231,7 @@ class DataLoader {
 
         await this.computeBuyHoldBaseline(allData);
 
+        console.log('Final allData (after baseline):', Object.keys(allData));
         return allData;
     }
 
@@ -941,56 +1259,61 @@ class DataLoader {
                 return !lower.includes('qqq') && !lower.includes('sse');
             });
 
-            if (entries.length === 0) {
+            const referenceEntry = entries.find(([name]) => {
+                return !/buy[- ]?and[- ]?hold/i.test(name);
+            }) || entries[0];
+
+            if (!referenceEntry) {
+                console.warn('Buy-and-hold baseline: no reference agent found.');
                 this.buyHoldSeries = null;
                 return;
             }
 
-            const [referenceName, referenceData] = entries[0];
+            const [referenceName, referenceData] = referenceEntry;
+            const initialValue = referenceData.initialValue ?? (referenceData.assetHistory[0]?.value ?? 10000);
             const candidatePositions = referenceData.positions || [];
-            let primarySymbol = null;
+            const explicitSymbols = referenceData.stockSymbols || [];
+            let primarySymbol = explicitSymbols.find(symbol => !!symbol) || null;
 
-            for (const entry of candidatePositions) {
-                if (entry && entry.positions) {
-                    const symbols = Object.keys(entry.positions).filter(key => key !== 'CASH');
-                    if (symbols.length > 0) {
-                        primarySymbol = symbols[0];
-                        break;
+            if (!primarySymbol) {
+                for (const entry of candidatePositions) {
+                    if (entry && entry.positions) {
+                        const symbols = Object.keys(entry.positions).filter(key => key !== 'CASH');
+                        if (symbols.length > 0) {
+                            primarySymbol = symbols[0];
+                            break;
+                        }
                     }
                 }
             }
 
-            if (!primarySymbol) {
-                console.warn('Buy-and-hold baseline: no tradable symbol detected.');
-                this.buyHoldSeries = null;
-                return;
-            }
-
-            const initialValue = referenceData.initialValue ?? (referenceData.assetHistory[0]?.value ?? 10000);
-            const firstDate = referenceData.assetHistory[0]?.date;
-            if (!firstDate) {
-                this.buyHoldSeries = null;
-                return;
-            }
-
-            const initialPrice = await this.getClosingPrice(primarySymbol, firstDate);
-            if (!initialPrice || !Number.isFinite(initialPrice) || initialPrice <= 0) {
-                console.warn('Buy-and-hold baseline: unable to determine initial price.');
-                this.buyHoldSeries = null;
-                return;
-            }
-
-            const sharesHeld = initialValue / initialPrice;
             const series = [];
+            let sharesHeld = null;
+            let lastValue = initialValue;
+
+            const computeBaselineValue = async (date) => {
+                if (!primarySymbol) {
+                    return lastValue;
+                }
+
+                const price = await this.getClosingPrice(primarySymbol, date);
+                if (!price || !Number.isFinite(price) || price <= 0) {
+                    return lastValue;
+                }
+
+                if (sharesHeld === null) {
+                    sharesHeld = initialValue / price;
+                }
+                return sharesHeld * price;
+            };
 
             for (const entry of referenceData.assetHistory) {
-                const price = await this.getClosingPrice(primarySymbol, entry.date);
-                if (!price || !Number.isFinite(price) || price <= 0) {
-                    continue;
-                }
+                const value = await computeBaselineValue(entry.date);
+                lastValue = value ?? lastValue;
+
                 series.push({
                     date: entry.date,
-                    value: sharesHeld * price
+                    value: lastValue ?? initialValue
                 });
             }
 
@@ -1001,7 +1324,7 @@ class DataLoader {
             }
 
             this.buyHoldSeries = series;
-            console.log(`Buy-and-hold baseline computed using ${primarySymbol} with ${sharesHeld.toFixed(4)} shares.`);
+            console.log(`Buy-and-hold baseline seeded from ${referenceName} with ${series.length} points.`);
         } catch (error) {
             console.warn('Failed to compute buy-and-hold baseline:', error);
             this.buyHoldSeries = null;
@@ -1018,6 +1341,17 @@ class DataLoader {
         if (!data) {
             console.log(`[getTradeHistory] No data for agent: ${agentName}`);
             return [];
+        }
+
+        if (data.tradeMarkers && data.tradeMarkers.length > 0) {
+            return data.tradeMarkers.map(marker => ({
+                date: marker.timestamp || marker.assetDate,
+                action: marker.action,
+                symbol: marker.symbol,
+                amount: marker.amount,
+                positions: marker.positionsSnapshot,
+                price: marker.price ?? undefined
+            })).reverse();
         }
 
         console.log(`[getTradeHistory] Agent: ${agentName}, Total positions: ${data.positions.length}`);
