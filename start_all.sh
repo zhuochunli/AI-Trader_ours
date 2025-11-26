@@ -113,6 +113,35 @@ else
     cleanup
 fi
 
+# Wait for MCP services to be ready (check if ports are listening)
+echo "⏳ Waiting for MCP services to be ready..."
+MAX_WAIT=30
+WAIT_COUNT=0
+MCP_PORTS=(8001 8002 8003 8004 8010)
+READY_COUNT=0
+
+while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+    READY_COUNT=0
+    for port in "${MCP_PORTS[@]}"; do
+        if lsof -ti:$port > /dev/null 2>&1; then
+            READY_COUNT=$((READY_COUNT + 1))
+        fi
+    done
+    
+    if [ $READY_COUNT -eq ${#MCP_PORTS[@]} ]; then
+        echo "✅ All MCP services are ready (${READY_COUNT}/${#MCP_PORTS[@]} ports listening)"
+        break
+    fi
+    
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+    sleep 1
+done
+
+if [ $READY_COUNT -lt ${#MCP_PORTS[@]} ]; then
+    echo "⚠️  Warning: Only ${READY_COUNT}/${#MCP_PORTS[@]} MCP services are ready"
+    echo "   Continuing anyway, but agents may fail to connect..."
+fi
+
 echo ""
 echo "Step 3/3: Starting 5-Min Trading Agent..."
 echo "----------------------------------------"

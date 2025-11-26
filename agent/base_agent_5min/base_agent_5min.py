@@ -601,7 +601,7 @@ class BaseAgent_5Min(BaseAgent):
                     # Display in readable format for console
                     readable_time = current_time_et.strftime("%Y-%m-%d %H:%M:%S")
                     if last_closed_log is None or (current_time_et - last_closed_log).total_seconds() >= 3600:
-                    print(f"⏸️  Market closed at {readable_time} ET. Waiting...")
+                        print(f"⏸️  Market closed at {readable_time} ET. Waiting...")
                         last_closed_log = current_time_et
                     seconds_until_open = self._seconds_until_next_market_open(current_time_et)
                     sleep_seconds = min(3600, seconds_until_open if seconds_until_open > 0 else 3600)

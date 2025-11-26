@@ -467,9 +467,12 @@ class DataLoader {
 
         for (const symbol of symbols) {
             const shares = position.positions[symbol];
-            if (shares > 0) {
+            // Handle both long positions (shares > 0) and short positions (shares < 0)
+            if (shares !== 0) {
                 const price = await this.getClosingPrice(symbol, date);
                 if (price && !isNaN(price)) {
+                    // For long positions: add value (shares * price)
+                    // For short positions: subtract value (negative shares * price)
                     totalValue += shares * price;
                 } else {
                     console.warn(`Missing or invalid price for ${symbol} on ${date}`);
@@ -941,8 +944,9 @@ class DataLoader {
         const existingAmount = Number.isFinite(existing.amount) ? existing.amount : 0;
         const incomingAmount = Number.isFinite(incoming.amount) ? incoming.amount : 0;
 
-        const signedExisting = (existing.action === 'sell' ? -1 : 1) * existingAmount;
-        const signedIncoming = (incoming.action === 'sell' ? -1 : 1) * incomingAmount;
+        // Short actions are treated like sell actions (negative signed value)
+        const signedExisting = (existing.action === 'sell' || existing.action === 'short' ? -1 : 1) * existingAmount;
+        const signedIncoming = (incoming.action === 'sell' || incoming.action === 'short' ? -1 : 1) * incomingAmount;
 
         const netSigned = signedExisting + signedIncoming;
         if (!Number.isFinite(netSigned)) {
@@ -955,10 +959,21 @@ class DataLoader {
         const valueBefore = this.firstFinite(existing.valueBefore, incoming.valueBefore);
         const valueAfter = this.firstFinite(incoming.valueAfter, existing.valueAfter);
 
+        // Determine the merged action: preserve 'short' if either action was short and net is negative
+        let mergedAction = 'buy';
+        if (netSigned < 0) {
+            // If net is negative, check if either action was a short
+            if (existing.action === 'short' || incoming.action === 'short') {
+                mergedAction = 'short';
+            } else {
+                mergedAction = 'sell';
+            }
+        }
+        
         const result = {
             ...existing,
             amount: Math.abs(netSigned),
-            action: netSigned >= 0 ? 'buy' : 'sell',
+            action: mergedAction,
             cashBefore: cashBefore !== undefined ? cashBefore : null,
             cashAfter: cashAfter !== undefined ? cashAfter : null,
             price: null,

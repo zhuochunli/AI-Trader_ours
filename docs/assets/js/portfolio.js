@@ -229,9 +229,10 @@ async function updateMetrics(data) {
         
         let stockValue = 0;
         for (const [symbol, shares] of Object.entries(latestPosition.positions)) {
-            if (symbol !== 'CASH' && shares > 0) {
+            if (symbol !== 'CASH' && shares !== 0) {
                 const price = await dataLoader.getClosingPrice(symbol, priceDate);
                 if (price) {
+                    // Handle both long positions (shares > 0) and short positions (shares < 0)
                     stockValue += shares * price;
                 }
             }
@@ -292,32 +293,37 @@ async function updateHoldingsTable(agentName) {
         priceDate = data.assetHistory[data.assetHistory.length - 1].date;
     }
 
-    // Get all stocks with non-zero holdings
+    // Get all stocks with non-zero holdings (including short positions with negative shares)
     const stocks = Object.entries(holdings)
-        .filter(([symbol, shares]) => symbol !== 'CASH');
+        .filter(([symbol, shares]) => symbol !== 'CASH' && shares !== 0);
 
     // Sort by market value (descending)
     const holdingsData = await Promise.all(
         stocks.map(async ([symbol, shares]) => {
             const price = await dataLoader.getClosingPrice(symbol, priceDate);
+            // Market value: positive for long positions, negative for short positions
             const marketValue = price ? shares * price : 0;
-            return { symbol, shares, price, marketValue };
+            const isShort = shares < 0;
+            return { symbol, shares, price, marketValue, isShort };
         })
     );
 
-    holdingsData.sort((a, b) => b.marketValue - a.marketValue);
+    holdingsData.sort((a, b) => Math.abs(b.marketValue) - Math.abs(a.marketValue));
 
-    // Calculate total value with current prices
+    // Calculate total value with current prices (short positions reduce total value)
     const totalStockValue = holdingsData.reduce((sum, h) => sum + h.marketValue, 0);
     const totalValue = totalStockValue + (holdings.CASH || 0);
 
     // Create table rows
     holdingsData.forEach(holding => {
-        const weight = (holding.marketValue / totalValue * 100).toFixed(2);
+        const weight = totalValue !== 0 ? (holding.marketValue / totalValue * 100).toFixed(2) : '0.00';
+        const sharesDisplay = holding.isShort 
+            ? `${Math.abs(holding.shares)} (short)`
+            : holding.shares.toString();
         const row = document.createElement('tr');
         row.innerHTML = `
             <td class="symbol">${holding.symbol}</td>
-            <td>${holding.shares}</td>
+            <td>${sharesDisplay}</td>
             <td>${dataLoader.formatCurrency(holding.price || 0)}</td>
             <td>${dataLoader.formatCurrency(holding.marketValue)}</td>
             <td>${weight}%</td>
@@ -387,11 +393,13 @@ async function updateAllocationChart(agentName) {
                 allocations.push({ label: 'CASH', value: cashValue });
                 totalValue += cashValue;
             }
-        } else if (shares > 0) {
+        } else if (shares !== 0) {
+            // Include both long (positive) and short (negative) positions
             const price = await dataLoader.getClosingPrice(symbol, priceDate);
             if (price) {
-                const value = shares * price;
-                allocations.push({ label: symbol, value });
+                const value = shares * price; // Negative for short positions
+                const label = shares < 0 ? `${symbol} (short)` : symbol;
+                allocations.push({ label, value });
                 totalValue += value;
             }
         }
@@ -510,9 +518,10 @@ function updateTradeHistory(agentName) {
         const tradeItem = document.createElement('div');
         tradeItem.className = 'trade-item';
 
+        const isShort = trade.action === 'short';
         const icon = trade.action === 'buy' ? '📈' : '📉';
         const iconClass = trade.action === 'buy' ? 'buy' : 'sell';
-        const actionText = trade.action === 'buy' ? 'Bought' : 'Sold';
+        const actionText = isShort ? 'Shorted' : (trade.action === 'buy' ? 'Bought' : 'Sold');
 
         // Format the timestamp for hourly data
         let formattedDate = trade.date;
@@ -528,6 +537,10 @@ function updateTradeHistory(agentName) {
         }
 
         const sharesAfter = trade.positions && trade.symbol ? trade.positions[trade.symbol] ?? 0 : 0;
+        const isShortPosition = sharesAfter < 0;
+        const sharesDisplay = isShortPosition 
+            ? `${Math.abs(sharesAfter)} (short)`
+            : `${sharesAfter} ${Math.abs(sharesAfter) === 1 ? 'share' : 'shares'}`;
         const priceInfo = Number.isFinite(trade.price) ? `$${trade.price.toFixed(2)} USD` : 'Price unavailable';
         const cashAfter = trade.positions && typeof trade.positions.CASH === 'number'
             ? trade.positions.CASH
@@ -545,7 +558,7 @@ function updateTradeHistory(agentName) {
                     <span> • </span>
                     <span class="trade-metric"><strong>Price:</strong> ${priceInfo}</span>
                     <span> • </span>
-                    <span class="trade-metric"><strong>Position:</strong> ${sharesAfter} ${sharesAfter === 1 ? 'share' : 'shares'}</span>
+                    <span class="trade-metric"><strong>Position:</strong> ${sharesDisplay}</span>
                     <span> • </span>
                     <span class="trade-metric"><strong>Cash:</strong> ${cashText}</span>
                 </div>

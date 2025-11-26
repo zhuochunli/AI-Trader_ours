@@ -268,23 +268,41 @@ class BaseAgentAStock:
         if not self.openai_base_url:
             print("⚠️  OpenAI base URL not set, using default")
 
-        try:
-            # Create MCP client
-            self.client = MultiServerMCPClient(self.mcp_config)
+        # Retry MCP client initialization (MCP services may need time to start)
+        max_retries = 5
+        retry_delay = 2  # seconds
+        last_error = None
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Create MCP client
+                self.client = MultiServerMCPClient(self.mcp_config)
 
-            # Get tools
-            self.tools = await self.client.get_tools()
-            if not self.tools:
-                print("⚠️  Warning: No MCP tools loaded. MCP services may not be running.")
-                print(f"   MCP configuration: {self.mcp_config}")
-            else:
-                print(f"✅ Loaded {len(self.tools)} MCP tools")
-        except Exception as e:
-            raise RuntimeError(
-                f"❌ Failed to initialize MCP client: {e}\n"
-                f"   Please ensure MCP services are running at the configured ports.\n"
-                f"   Run: python agent_tools/start_mcp_services.py"
-            )
+                # Get tools
+                self.tools = await self.client.get_tools()
+                if not self.tools:
+                    if attempt < max_retries:
+                        print(f"⚠️  No MCP tools loaded (attempt {attempt}/{max_retries}), retrying in {retry_delay}s...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        print("⚠️  Warning: No MCP tools loaded. MCP services may not be running.")
+                        print(f"   MCP configuration: {self.mcp_config}")
+                else:
+                    print(f"✅ Loaded {len(self.tools)} MCP tools")
+                    break  # Success, exit retry loop
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    print(f"⚠️  MCP client initialization failed (attempt {attempt}/{max_retries}): {str(e)}")
+                    print(f"   Retrying in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    raise RuntimeError(
+                        f"❌ Failed to initialize MCP client after {max_retries} attempts: {last_error}\n"
+                        f"   Please ensure MCP services are running at the configured ports.\n"
+                        f"   Run: python agent_tools/start_mcp_services.py"
+                    )
 
         try:
             # Create AI model - use custom DeepSeekChatOpenAI for DeepSeek models

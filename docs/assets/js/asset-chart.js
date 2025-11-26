@@ -182,11 +182,17 @@ function formatShares(value) {
     if (value === null || value === undefined) {
         return '—';
     }
-    // Clamp shares to 0 minimum (should never be negative, but protect against corrupted data)
-    const clampedValue = Math.max(0, value);
+    // Handle short positions (negative shares)
+    if (value < 0) {
+        const absValue = Math.abs(value);
+        const formatted = new Intl.NumberFormat('en-US', {
+            maximumFractionDigits: 4
+        }).format(absValue);
+        return `-${formatted} (short)`;
+    }
     return new Intl.NumberFormat('en-US', {
         maximumFractionDigits: 4
-    }).format(clampedValue);
+    }).format(value);
 }
 
 function formatCurrencySoft(value) {
@@ -213,6 +219,7 @@ function showTradePopover({ dataset, dataPoint, element, chart }) {
     const meta = dataPoint.meta || {};
     const action = meta.action || 'trade';
     const isSell = action === 'sell';
+    const isShort = action === 'short';
     const symbol = meta.symbol || 'Unknown';
     const amountFormatted = formatShares(meta.amount);
     const displayName = meta.displayName || dataset.label || dataLoader.getAgentDisplayName(meta.agentName || dataset.agentName);
@@ -238,10 +245,13 @@ function showTradePopover({ dataset, dataPoint, element, chart }) {
     const sharesAfterDisplay = formatShares(meta.sharesAfter);
 
     const changeClass = meta.valueChange > 0 ? 'positive' : (meta.valueChange < 0 ? 'negative' : 'neutral');
+    
+    const actionLabel = isShort ? 'Short' : (isSell ? 'Sell' : 'Buy');
+    const actionClass = isShort || isSell ? 'sell' : 'buy';
 
     const html = `
         <div class="trade-popover-header">
-            <span class="trade-badge ${isSell ? 'sell' : 'buy'}">${isSell ? 'Sell' : 'Buy'}</span>
+            <span class="trade-badge ${actionClass}">${actionLabel}</span>
             <div class="trade-symbol">${symbol}</div>
             <div class="trade-amount">×${amountFormatted}</div>
         </div>
@@ -846,7 +856,8 @@ function createChart() {
 
             if (marker.action === 'buy') {
                 buyPoints.push(point);
-            } else if (marker.action === 'sell') {
+            } else if (marker.action === 'sell' || marker.action === 'short') {
+                // Short actions are displayed as sell arrows (downward) since shorting is selling shares you don't own
                 sellPoints.push(point);
             }
         });
@@ -877,7 +888,7 @@ function createChart() {
 
         if (showTradeMarkers && sellPoints.length > 0) {
             datasets.push({
-                label: `${dataLoader.getAgentDisplayName(agentName)} Sells`,
+                label: `${dataLoader.getAgentDisplayName(agentName)} Sells/Shorts`,
                 data: sellPoints,
                 type: 'scatter',
                 showLine: false,

@@ -50,6 +50,7 @@ Guidelines:
 - Consider transaction costs in your analysis
 - If data is incomplete, output {STOP_SIGNAL} to continue later
 - Close all positions before the end of each trading day.
+- Position sizing: Maximum short shares equals maximum long shares you could buy with current cash (symmetric limits)
 
 Here is the information provided:
 
