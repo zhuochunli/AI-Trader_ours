@@ -3,4 +3,18 @@ langchain-openai==1.0.1
 langchain-mcp-adapters>=0.1.0
 fastmcp==2.12.5
 
+# Data processing and analysis
+pandas
+numpy
+
+# HTTP requests
+requests
+
+# Environment variables
+python-dotenv
+
+# Timezone handling
+pytz
+
+# Chinese stock market data
 tushare
